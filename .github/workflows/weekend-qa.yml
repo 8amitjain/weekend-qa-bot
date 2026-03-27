@@ -35,7 +35,7 @@ jobs:
           OUTPUT_DIR: ./reports
         run: |
           mkdir -p reports
-          python run.py
+          python api/cron.py
 
       - name: Upload report artifacts
         if: always()
