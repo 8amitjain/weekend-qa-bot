@@ -522,3 +522,27 @@ class handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"error": str(e)}).encode())
+
+# ── CLI Entry Point ──────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    print("Starting Weekend QA Audit...")
+    results = run_audit()
+    pdf_buf = generate_pdf(results)
+    slack_ok = post_slack(results, pdf_buf)
+
+    # Save PDF locally if OUTPUT_DIR is set
+    output_dir = os.environ.get("OUTPUT_DIR")
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d")
+        path = os.path.join(output_dir, f"qa-report-{ts}.pdf")
+        with open(path, "wb") as f:
+            pdf_buf.seek(0)
+            f.write(pdf_buf.read())
+        print(f"PDF saved to {path}")
+
+    s = results["summary"]
+    print(f"\nDone! {s['total']} sites checked — "
+          f"{s['critical']} critical, {s['warning']} warnings, "
+          f"{s['info']} info. Slack posted: {slack_ok}")
