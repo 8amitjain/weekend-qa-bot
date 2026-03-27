@@ -1,0 +1,46 @@
+name: Weekend QA Audit
+
+on:
+  # Runs every Saturday at 8:00 AM UTC (adjust for your timezone)
+  # For EST: 8am EST = 1pm UTC → use "0 13 * * 6"
+  # For PST: 8am PST = 4pm UTC → use "0 16 * * 6"
+  schedule:
+    - cron: "0 13 * * 6"  # Saturday 8am EST / 1pm UTC
+
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+
+jobs:
+  qa-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run QA Audit
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          OUTPUT_DIR: ./reports
+        run: |
+          mkdir -p reports
+          python run.py
+
+      - name: Upload report artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-report-${{ github.run_number }}
+          path: reports/
+          retention-days: 90
