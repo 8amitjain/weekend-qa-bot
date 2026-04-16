@@ -279,6 +279,7 @@ def run_audit():
         "warning": sum(1 for r in all_r if r["status"] == "WARNING"),
         "passed": sum(1 for r in all_r if r["status"] == "PASS"),
         "down": sum(1 for r in all_r if r["status"] == "DOWN"),
+        "info": sum(1 for r in all_r for t, _ in r["issues"] if t == "info"),
         "issues": sum(len(r["issues"]) for r in all_r),
         "duration": round(time.time() - start),
         "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
