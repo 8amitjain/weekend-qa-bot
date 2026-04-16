@@ -1,11 +1,9 @@
 name: Weekend QA Audit
 
 on:
-  # Runs every Saturday at 8:00 AM UTC (adjust for your timezone)
-  # For EST: 8am EST = 1pm UTC → use "0 13 * * 6"
-  # For PST: 8am PST = 4pm UTC → use "0 16 * * 6"
+  # Runs every Saturday at 8:00 AM EST (1pm UTC)
   schedule:
-    - cron: "0 13 * * 6"  # Saturday 8am EST / 1pm UTC
+    - cron: "0 13 * * 6"
 
   # Allow manual trigger from GitHub UI
   workflow_dispatch:
@@ -28,7 +26,9 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          python -c "import requests; import reportlab; print(f'requests={requests.__version__}, reportlab={reportlab.Version}')"
 
       - name: Run QA Audit
         env:
@@ -46,3 +46,4 @@ jobs:
           name: qa-report-${{ github.run_number }}
           path: reports/
           retention-days: 90
+          if-no-files-found: warn

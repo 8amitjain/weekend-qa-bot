@@ -16,6 +16,8 @@ import time
 import json
 import os
 import io
+import sys
+import traceback
 import concurrent.futures
 from urllib.parse import urlparse
 from datetime import datetime, timezone
@@ -25,7 +27,7 @@ from datetime import datetime, timezone
 TIMEOUT = 10
 MAX_WORKERS = 15
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL_ID", "C0AP3RF4J4B")
-AMIT_ID = "D05JGP5EV9R"
+AMIT_ID = "U05K6HRC4V6"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
 HDRS = {"User-Agent": UA}
 
@@ -367,84 +369,91 @@ def audit_site(site, tier):
         "priority": site.get("priority", 99),
     }
 
-    # For redirect domains, just check if redirect works
-    if cat == "redirect":
-        http = check_http(url, follow_redirects=True)
+    try:
+        # For redirect domains, just check if redirect works
+        if cat == "redirect":
+            http = check_http(url, follow_redirects=True)
+            if not http["ok"]:
+                r["issues"].append(("critical", http.get("err", f"HTTP {http.get('code')}")))
+                r["status"] = "DOWN"
+            elif not http.get("redirected"):
+                r["issues"].append(("warning", "301 domain NOT redirecting — check DNS"))
+                r["status"] = "WARNING"
+            else:
+                r["status"] = "PASS"
+            r["resp_time"] = http.get("time")
+            return r
+
+        # HTTP check
+        http = check_http(url)
         if not http["ok"]:
             r["issues"].append(("critical", http.get("err", f"HTTP {http.get('code')}")))
             r["status"] = "DOWN"
-        elif not http.get("redirected"):
-            r["issues"].append(("warning", "301 domain NOT redirecting — check DNS"))
-            r["status"] = "WARNING"
-        else:
-            r["status"] = "PASS"
-        r["resp_time"] = http.get("time")
-        return r
+            return r
 
-    # HTTP check
-    http = check_http(url)
-    if not http["ok"]:
-        r["issues"].append(("critical", http.get("err", f"HTTP {http.get('code')}")))
-        r["status"] = "DOWN"
-        return r
+        r["resp_time"] = http["time"]
+        if http["time"] > 5:
+            r["issues"].append(("warning", f"Slow response: {http['time']}s"))
+        elif http["time"] > 3:
+            r["issues"].append(("info", f"Moderate response: {http['time']}s"))
 
-    r["resp_time"] = http["time"]
-    if http["time"] > 5:
-        r["issues"].append(("warning", f"Slow response: {http['time']}s"))
-    elif http["time"] > 3:
-        r["issues"].append(("info", f"Moderate response: {http['time']}s"))
+        # SSL check
+        s = check_ssl(url)
+        if not s["ok"]:
+            r["issues"].append(("critical", f"SSL error: {s.get('err', 'failed')}"))
+        elif s.get("warn"):
+            r["issues"].append(("critical", f"SSL expires in {s['days']} days!"))
+        elif s.get("days") and s["days"] < 60:
+            r["issues"].append(("warning", f"SSL expires in {s['days']} days"))
 
-    # SSL check
-    s = check_ssl(url)
-    if not s["ok"]:
-        r["issues"].append(("critical", f"SSL error: {s.get('err', 'failed')}"))
-    elif s.get("warn"):
-        r["issues"].append(("critical", f"SSL expires in {s['days']} days!"))
-    elif s.get("days") and s["days"] < 60:
-        r["issues"].append(("warning", f"SSL expires in {s['days']} days"))
+        # Meta / SEO checks
+        html = http.get("html", "")
+        if html:
+            r["issues"].extend(check_meta(html, url))
 
-    # Meta / SEO checks
-    html = http.get("html", "")
-    if html:
-        r["issues"].extend(check_meta(html, url))
+            # Tier 1: deeper checks
+            if tier == 1:
+                # CTA check for stores/kill pages
+                if cat in ("shopify", "kill", "solv_kill", "nuu3_kill"):
+                    if not re.search(r"(?:buy.now|add.to.cart|order.now|shop.now|get.started|subscribe)", html, re.I):
+                        r["issues"].append(("warning", "No CTA button found (Buy Now / Add to Cart)"))
 
-        # Tier 1: deeper checks
-        if tier == 1:
-            # CTA check for stores/kill pages
-            if cat in ("shopify", "kill", "solv_kill", "nuu3_kill"):
-                if not re.search(r"(?:buy.now|add.to.cart|order.now|shop.now|get.started|subscribe)", html, re.I):
-                    r["issues"].append(("warning", "No CTA button found (Buy Now / Add to Cart)"))
+                # Check internal links
+                r["issues"].extend(check_links(html, url))
 
-            # Check internal links
-            r["issues"].extend(check_links(html, url))
+                # Page size
+                kb = len(html) / 1024
+                if kb > 500:
+                    r["issues"].append(("info", f"Large HTML: {round(kb)}KB"))
 
-            # Page size
-            kb = len(html) / 1024
-            if kb > 500:
-                r["issues"].append(("info", f"Large HTML: {round(kb)}KB"))
+                # Check for sitemap reference
+                try:
+                    sitemap_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}/sitemap.xml"
+                    sr = req.get(sitemap_url, headers=HDRS, timeout=5)
+                    if sr.status_code != 200:
+                        r["issues"].append(("info", "sitemap.xml not found"))
+                except Exception:
+                    r["issues"].append(("info", "sitemap.xml unreachable"))
 
-            # Check for sitemap reference
-            try:
-                sitemap_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}/sitemap.xml"
-                sr = req.get(sitemap_url, headers=HDRS, timeout=5)
-                if sr.status_code != 200:
-                    r["issues"].append(("info", "sitemap.xml not found"))
-            except Exception:
-                r["issues"].append(("info", "sitemap.xml unreachable"))
+                # Check robots.txt
+                try:
+                    robots_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}/robots.txt"
+                    rr = req.get(robots_url, headers=HDRS, timeout=5)
+                    if rr.status_code != 200:
+                        r["issues"].append(("info", "robots.txt not found"))
+                except Exception:
+                    pass
 
-            # Check robots.txt
-            try:
-                robots_url = f"{urlparse(url).scheme}://{urlparse(url).netloc}/robots.txt"
-                rr = req.get(robots_url, headers=HDRS, timeout=5)
-                if rr.status_code != 200:
-                    r["issues"].append(("info", "robots.txt not found"))
-            except Exception:
-                pass
+        # Determine status
+        crits = sum(1 for t, _ in r["issues"] if t == "critical")
+        warns = sum(1 for t, _ in r["issues"] if t == "warning")
+        r["status"] = "CRITICAL" if crits else ("WARNING" if warns else "PASS")
 
-    # Determine status
-    crits = sum(1 for t, _ in r["issues"] if t == "critical")
-    warns = sum(1 for t, _ in r["issues"] if t == "warning")
-    r["status"] = "CRITICAL" if crits else ("WARNING" if warns else "PASS")
+    except Exception as e:
+        print(f"ERROR auditing {url}: {traceback.format_exc()}")
+        r["status"] = "ERROR"
+        r["issues"].append(("critical", f"Audit crashed: {str(e)[:100]}"))
+
     return r
 
 
@@ -477,6 +486,7 @@ def run_audit():
         "warning": sum(1 for r in all_r if r["status"] == "WARNING"),
         "passed": sum(1 for r in all_r if r["status"] == "PASS"),
         "down": sum(1 for r in all_r if r["status"] == "DOWN"),
+        "errors": sum(1 for r in all_r if r["status"] == "ERROR"),
         "info": sum(1 for r in all_r for t, _ in r["issues"] if t == "info"),
         "issues": sum(len(r["issues"]) for r in all_r),
         "duration": round(time.time() - start),
@@ -493,6 +503,14 @@ def run_audit():
 # ── PDF Generation ───────────────────────────────────────────────────────
 
 def generate_pdf(results):
+    try:
+        return _generate_pdf_inner(results)
+    except Exception as e:
+        print(f"ERROR generating PDF: {traceback.format_exc()}")
+        return None
+
+
+def _generate_pdf_inner(results):
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.units import inch
     from reportlab.lib.colors import HexColor, white
@@ -751,34 +769,44 @@ def post_slack(results, pdf_buf):
 
     # Upload PDF in thread
     if pdf_buf:
-        uh = {"Authorization": f"Bearer {token}"}
-        pdf_bytes = pdf_buf.read()
-        fname = f"QA_Report_{s['date']}.pdf"
+        try:
+            pdf_buf.seek(0)
+            uh = {"Authorization": f"Bearer {token}"}
+            pdf_bytes = pdf_buf.read()
+            fname = f"QA_Report_{s['date']}.pdf"
 
-        # Get upload URL
-        ur = req.post(
-            "https://slack.com/api/files.getUploadURLExternal",
-            headers=uh,
-            data={"filename": fname, "length": len(pdf_bytes)},
-        )
-        if ur.status_code == 200 and ur.json().get("ok"):
-            upload_url = ur.json()["upload_url"]
-            file_id = ur.json()["file_id"]
-            # Upload file
-            req.post(upload_url, files={"file": (fname, pdf_bytes, "application/pdf")})
-            # Complete upload
-            req.post(
-                "https://slack.com/api/files.completeUploadExternal",
-                headers=hdrs,
-                json={
-                    "files": [{"id": file_id, "title": f"QA Report {s['date']}"}],
-                    "channel_id": SLACK_CHANNEL,
-                    "thread_ts": thread_ts,
-                    "initial_comment": ":page_facing_up: Full PDF report attached.",
-                },
+            # Get upload URL
+            ur = req.post(
+                "https://slack.com/api/files.getUploadURLExternal",
+                headers=uh,
+                data={"filename": fname, "length": len(pdf_bytes)},
             )
-        else:
-            print(f"PDF upload failed: {ur.text[:200]}")
+            if ur.status_code == 200 and ur.json().get("ok"):
+                upload_url = ur.json()["upload_url"]
+                file_id = ur.json()["file_id"]
+                # Upload file
+                req.post(upload_url, files={"file": (fname, pdf_bytes, "application/pdf")})
+                # Complete upload
+                req.post(
+                    "https://slack.com/api/files.completeUploadExternal",
+                    headers=hdrs,
+                    json={
+                        "files": [{"id": file_id, "title": f"QA Report {s['date']}"}],
+                        "channel_id": SLACK_CHANNEL,
+                        "thread_ts": thread_ts,
+                        "initial_comment": ":page_facing_up: Full PDF report attached.",
+                    },
+                )
+            else:
+                print(f"PDF upload failed: {ur.text[:200]}")
+        except Exception as e:
+            print(f"ERROR uploading PDF to Slack: {traceback.format_exc()}")
+        finally:
+            # Reset buffer position so callers can still use it (e.g., save locally)
+            try:
+                pdf_buf.seek(0)
+            except Exception:
+                pass
 
     return True
 
@@ -822,27 +850,36 @@ class handler(BaseHTTPRequestHandler):
 # ── CLI Entry Point ──────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print(f"Starting Weekend QA Audit... ({len(TIER1)} T1, {len(TIER2)} T2, {len(TIER3)} T3 sites)")
-    results = run_audit()
+    try:
+        print(f"Starting Weekend QA Audit... ({len(TIER1)} T1, {len(TIER2)} T2, {len(TIER3)} T3 sites)")
+        results = run_audit()
 
-    pdf_buf = generate_pdf(results)
-    slack_ok = post_slack(results, pdf_buf)
+        pdf_buf = generate_pdf(results)
+        slack_ok = post_slack(results, pdf_buf)
 
-    # Save PDF locally if OUTPUT_DIR is set
-    output_dir = os.environ.get("OUTPUT_DIR")
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-        ts = datetime.now().strftime("%Y-%m-%d")
-        path = os.path.join(output_dir, f"qa-report-{ts}.pdf")
-        with open(path, "wb") as f:
-            pdf_buf.seek(0)
-            f.write(pdf_buf.read())
-        print(f"PDF saved to {path}")
+        # Save PDF locally if OUTPUT_DIR is set
+        output_dir = os.environ.get("OUTPUT_DIR")
+        if output_dir and pdf_buf is not None:
+            os.makedirs(output_dir, exist_ok=True)
+            ts = datetime.now().strftime("%Y-%m-%d")
+            path = os.path.join(output_dir, f"qa-report-{ts}.pdf")
+            with open(path, "wb") as f:
+                pdf_buf.seek(0)
+                f.write(pdf_buf.read())
+            print(f"PDF saved to {path}")
+        elif output_dir and pdf_buf is None:
+            print("WARNING: PDF generation failed, skipping local save.")
 
-    s = results["summary"]
-    print(
-        f"\nDone! {s['total']} sites checked — "
-        f"{s['critical']} critical, {s['warning']} warnings, "
-        f"{s['down']} down, {s['passed']} passed. "
-        f"Slack posted: {slack_ok}"
-    )
+        s = results["summary"]
+        print(
+            f"\nDone! {s['total']} sites checked — "
+            f"{s['critical']} critical, {s['warning']} warnings, "
+            f"{s['down']} down, {s['passed']} passed. "
+            f"Slack posted: {slack_ok}"
+        )
+    except Exception:
+        print("FATAL ERROR in Weekend QA Bot:")
+        traceback.print_exc()
+        sys.exit(1)
+
+    sys.exit(0)
