@@ -997,6 +997,8 @@ def _upload_pdf(token, hdrs, pdf_buf, filename, title, channel, thread_ts, comme
         print(f"  SKIP {filename}: PDF buffer is empty")
         return False
 
+    print(f"  Uploading {filename} ({len(pdf_bytes)} bytes)...")
+
     try:
         # Step 1: Get upload URL
         ur = req.post("https://slack.com/api/files.getUploadURLExternal",
@@ -1004,19 +1006,21 @@ def _upload_pdf(token, hdrs, pdf_buf, filename, title, channel, thread_ts, comme
         ur_data = ur.json()
         if not (ur.status_code == 200 and ur_data.get("ok")):
             err = ur_data.get("error", ur.text[:200])
-            print(f"  FAIL getUploadURL for {filename}: {err}")
+            print(f"  FAIL Step 1 getUploadURL for {filename}: {err}")
             if "missing_scope" in str(err) or "not_allowed" in str(err):
                 print("  → Bot token needs 'files:write' scope. Add it in Slack App settings.")
             return False
 
         upload_url = ur_data["upload_url"]
         file_id = ur_data["file_id"]
+        print(f"  Step 1 OK — got upload URL and file_id={file_id}")
 
         # Step 2: Upload file content
         up_resp = req.post(upload_url, files={"file": (filename, pdf_bytes, "application/pdf")})
         if up_resp.status_code not in (200, 201):
-            print(f"  FAIL upload content for {filename}: HTTP {up_resp.status_code}")
+            print(f"  FAIL Step 2 upload content for {filename}: HTTP {up_resp.status_code} — {up_resp.text[:200]}")
             return False
+        print(f"  Step 2 OK — file content uploaded")
 
         # Step 3: Complete upload and share to channel/thread
         comp = req.post("https://slack.com/api/files.completeUploadExternal", headers=hdrs,
@@ -1028,14 +1032,21 @@ def _upload_pdf(token, hdrs, pdf_buf, filename, title, channel, thread_ts, comme
                         })
         comp_data = comp.json()
         if not comp_data.get("ok"):
-            print(f"  FAIL completeUpload for {filename}: {comp_data.get('error', 'unknown')}")
+            err = comp_data.get("error", "unknown")
+            print(f"  FAIL Step 3 completeUpload for {filename}: {err}")
+            if "not_in_channel" in str(err):
+                print("  → Bot needs to be invited to the channel: /invite @YourBotName")
+            elif "channel_not_found" in str(err):
+                print(f"  → Channel {channel} not found or bot doesn't have access")
             return False
 
-        print(f"  OK uploaded {filename}")
+        print(f"  OK uploaded {filename} to Slack")
         return True
 
     except Exception as e:
         print(f"  ERROR uploading {filename}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -1124,13 +1135,16 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
     thread_ts = r.json().get("ts")
 
     # Upload summary PDF in thread
-    upload_ok = False
     if can_upload:
-        upload_ok = _upload_pdf(token, hdrs, summary_pdf, f"QA_Summary_{TODAY}.pdf",
+        summary_ok = _upload_pdf(token, hdrs, summary_pdf, f"QA_Summary_{TODAY}.pdf",
                     f"QA Summary {TODAY}", SLACK_CHANNEL, thread_ts,
                     ":bar_chart: Full summary report (all sites)")
-    if not upload_ok:
-        print("Summary PDF upload failed — will use text fallbacks for all sites")
+        if not summary_ok:
+            print("Summary PDF upload failed — but will still try per-site PDFs individually")
+    else:
+        print("WARNING: No files:write scope — all PDFs will use text fallback")
+        print("  → Go to https://api.slack.com/apps → your app → OAuth & Permissions")
+        print("  → Add scopes: files:write, files:read → Reinstall the app")
 
     # Upload per-site PDFs — only for sites with issues
     problem_sites = [(r, pdf) for r, pdf in site_pdfs if r["status"] != "PASS"]
@@ -1147,19 +1161,19 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
             f"{result['counts'].get('critical', 0)} critical, "
             f"{result['counts'].get('warning', 0)} warnings"
         )
-        if can_upload and upload_ok:
+        if can_upload:
             ok = _upload_pdf(token, hdrs, pdf_buf, fname, title, SLACK_CHANNEL, thread_ts, comment)
             if ok:
                 pdf_success += 1
             else:
-                # PDF upload failed — post text fallback for this site
+                # PDF upload failed for THIS site — post text fallback
                 _post_text_fallback(hdrs, SLACK_CHANNEL, thread_ts, result)
                 pdf_fail += 1
         else:
             # No file upload permission — always use text fallback
             _post_text_fallback(hdrs, SLACK_CHANNEL, thread_ts, result)
             pdf_fail += 1
-        time.sleep(0.5)  # Rate limiting
+        time.sleep(1.0)  # Slack rate limit — 1s between file uploads
 
     print(f"  PDF uploads: {pdf_success} OK, {pdf_fail} failed (text fallback used)")
 
