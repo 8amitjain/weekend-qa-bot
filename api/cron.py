@@ -961,6 +961,108 @@ def generate_summary_pdf(all_results):
     return buf
 
 
+# ── Slack Helpers ───────────────────────────────────────────────────────
+
+
+def _check_slack_scopes(token):
+    """Check if the Slack bot token has the required scopes for file uploads."""
+    try:
+        r = req.post("https://slack.com/api/auth.test",
+                     headers={"Authorization": f"Bearer {token}"})
+        if r.status_code == 200 and r.json().get("ok"):
+            # The response headers contain the scopes
+            scopes = r.headers.get("x-oauth-scopes", "")
+            print(f"Slack bot scopes: {scopes}")
+            has_files = "files:write" in scopes or "files:read" in scopes
+            if not has_files:
+                print("WARNING: Bot token is missing 'files:write' scope — PDF uploads will fail!")
+                print("  → Go to https://api.slack.com/apps → your app → OAuth & Permissions")
+                print("  → Add scopes: files:write, files:read → Reinstall the app")
+            return has_files
+        else:
+            print(f"Slack auth.test failed: {r.json().get('error', 'unknown')}")
+            return False
+    except Exception as e:
+        print(f"Slack scope check error: {e}")
+        return False
+
+
+def _upload_pdf(token, hdrs, pdf_buf, filename, title, channel, thread_ts, comment):
+    """Upload a PDF to Slack using the new files.upload API. Returns True on success."""
+    uh = {"Authorization": f"Bearer {token}"}
+    pdf_buf.seek(0)
+    pdf_bytes = pdf_buf.read()
+
+    if len(pdf_bytes) == 0:
+        print(f"  SKIP {filename}: PDF buffer is empty")
+        return False
+
+    try:
+        # Step 1: Get upload URL
+        ur = req.post("https://slack.com/api/files.getUploadURLExternal",
+                      headers=uh, data={"filename": filename, "length": len(pdf_bytes)})
+        ur_data = ur.json()
+        if not (ur.status_code == 200 and ur_data.get("ok")):
+            err = ur_data.get("error", ur.text[:200])
+            print(f"  FAIL getUploadURL for {filename}: {err}")
+            if "missing_scope" in str(err) or "not_allowed" in str(err):
+                print("  → Bot token needs 'files:write' scope. Add it in Slack App settings.")
+            return False
+
+        upload_url = ur_data["upload_url"]
+        file_id = ur_data["file_id"]
+
+        # Step 2: Upload file content
+        up_resp = req.post(upload_url, files={"file": (filename, pdf_bytes, "application/pdf")})
+        if up_resp.status_code not in (200, 201):
+            print(f"  FAIL upload content for {filename}: HTTP {up_resp.status_code}")
+            return False
+
+        # Step 3: Complete upload and share to channel/thread
+        comp = req.post("https://slack.com/api/files.completeUploadExternal", headers=hdrs,
+                        json={
+                            "files": [{"id": file_id, "title": title}],
+                            "channel_id": channel,
+                            "thread_ts": thread_ts,
+                            "initial_comment": comment,
+                        })
+        comp_data = comp.json()
+        if not comp_data.get("ok"):
+            print(f"  FAIL completeUpload for {filename}: {comp_data.get('error', 'unknown')}")
+            return False
+
+        print(f"  OK uploaded {filename}")
+        return True
+
+    except Exception as e:
+        print(f"  ERROR uploading {filename}: {e}")
+        return False
+
+
+def _post_text_fallback(hdrs, channel, thread_ts, result):
+    """Post a text summary of site issues as fallback when PDF upload fails."""
+    issues_text = []
+    for sev, msg, _ in result["issues"][:10]:
+        icon = ":red_circle:" if sev == "critical" else ":warning:" if sev == "warning" else ":information_source:"
+        issues_text.append(f"  {icon} {msg[:100]}")
+
+    text = (
+        f":page_facing_up: *{result['label']}* [{result['status']}] — "
+        f"{result['counts'].get('critical', 0)} critical, "
+        f"{result['counts'].get('warning', 0)} warnings\n"
+        + "\n".join(issues_text)
+    )
+    if len(result["issues"]) > 10:
+        text += f"\n  _...and {len(result['issues']) - 10} more issues_"
+
+    try:
+        req.post("https://slack.com/api/chat.postMessage", headers=hdrs,
+                 json={"channel": channel, "text": text,
+                        "thread_ts": thread_ts, "unfurl_links": False})
+    except Exception as e:
+        print(f"  Text fallback also failed for {result['label']}: {e}")
+
+
 # ── Slack Posting ────────────────────────────────────────────────────────
 
 def post_to_slack(all_results, site_pdfs, summary_pdf):
@@ -971,6 +1073,9 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
         return False
 
     hdrs = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    # Check if we have file upload permissions
+    can_upload = _check_slack_scopes(token)
     total = len(all_results)
     crits = sum(1 for r in all_results if r["status"] == "CRITICAL")
     warns = sum(1 for r in all_results if r["status"] == "WARNING")
@@ -1019,14 +1124,20 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
     thread_ts = r.json().get("ts")
 
     # Upload summary PDF in thread
-    _upload_pdf(token, hdrs, summary_pdf, f"QA_Summary_{TODAY}.pdf",
-                f"QA Summary {TODAY}", SLACK_CHANNEL, thread_ts,
-                ":bar_chart: Full summary report (all sites)")
+    upload_ok = False
+    if can_upload:
+        upload_ok = _upload_pdf(token, hdrs, summary_pdf, f"QA_Summary_{TODAY}.pdf",
+                    f"QA Summary {TODAY}", SLACK_CHANNEL, thread_ts,
+                    ":bar_chart: Full summary report (all sites)")
+    if not upload_ok:
+        print("Summary PDF upload failed — will use text fallbacks for all sites")
 
     # Upload per-site PDFs — only for sites with issues
     problem_sites = [(r, pdf) for r, pdf in site_pdfs if r["status"] != "PASS"]
     problem_sites.sort(key=lambda x: x[0].get("priority", 99))
 
+    pdf_success = 0
+    pdf_fail = 0
     for result, pdf_buf in problem_sites:
         safe_label = re.sub(r'[^a-zA-Z0-9_-]', '_', result["label"])
         fname = f"QA_{safe_label}_{TODAY}.pdf"
@@ -1036,8 +1147,21 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
             f"{result['counts'].get('critical', 0)} critical, "
             f"{result['counts'].get('warning', 0)} warnings"
         )
-        _upload_pdf(token, hdrs, pdf_buf, fname, title, SLACK_CHANNEL, thread_ts, comment)
+        if can_upload and upload_ok:
+            ok = _upload_pdf(token, hdrs, pdf_buf, fname, title, SLACK_CHANNEL, thread_ts, comment)
+            if ok:
+                pdf_success += 1
+            else:
+                # PDF upload failed — post text fallback for this site
+                _post_text_fallback(hdrs, SLACK_CHANNEL, thread_ts, result)
+                pdf_fail += 1
+        else:
+            # No file upload permission — always use text fallback
+            _post_text_fallback(hdrs, SLACK_CHANNEL, thread_ts, result)
+            pdf_fail += 1
         time.sleep(0.5)  # Rate limiting
+
+    print(f"  PDF uploads: {pdf_success} OK, {pdf_fail} failed (text fallback used)")
 
     # Post a pass-list summary in thread
     pass_sites = [r for r in all_results if r["status"] == "PASS"]
@@ -1050,35 +1174,6 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
                         "thread_ts": thread_ts, "unfurl_links": False})
 
     return True
-
-
-def _upload_pdf(token, hdrs, pdf_buf, filename, title, channel, thread_ts, comment):
-    """Upload a PDF to Slack using the new files.upload API."""
-    uh = {"Authorization": f"Bearer {token}"}
-    pdf_buf.seek(0)
-    pdf_bytes = pdf_buf.read()
-
-    try:
-        # Get upload URL
-        ur = req.post("https://slack.com/api/files.getUploadURLExternal",
-                      headers=uh, data={"filename": filename, "length": len(pdf_bytes)})
-        if ur.status_code == 200 and ur.json().get("ok"):
-            upload_url = ur.json()["upload_url"]
-            file_id = ur.json()["file_id"]
-            # Upload file content
-            req.post(upload_url, files={"file": (filename, pdf_bytes, "application/pdf")})
-            # Complete upload
-            req.post("https://slack.com/api/files.completeUploadExternal", headers=hdrs,
-                     json={
-                         "files": [{"id": file_id, "title": title}],
-                         "channel_id": channel,
-                         "thread_ts": thread_ts,
-                         "initial_comment": comment,
-                     })
-        else:
-            print(f"Upload failed for {filename}: {ur.text[:200]}")
-    except Exception as e:
-        print(f"Upload error for {filename}: {e}")
 
 
 # ── Main Runner ──────────────────────────────────────────────────────────
