@@ -1,0 +1,1631 @@
+{
+  "summary": {
+    "total": 115,
+    "critical": 0,
+    "warning": 0,
+    "passed": 0,
+    "down": 115,
+    "errors": 0,
+    "info": 0,
+    "issues": 115,
+    "duration": 0,
+    "date": "2026-04-16",
+    "tier_counts": {
+      "tier1": 19,
+      "tier2": 53,
+      "tier3": 43
+    }
+  },
+  "sites": [
+    {
+      "url": "https://www.virectin.com/",
+      "label": "Virectin Store (#1)",
+      "cat": "shopify",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.virectin.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://www.flexoplex.com/",
+      "label": "Flexoplex Store (#2)",
+      "cat": "shopify",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.flexoplex.com', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://www.provasil.com/",
+      "label": "Provasil Store (#3)",
+      "cat": "shopify",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.provasil.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://www.phenocal.com/",
+      "label": "Phenocal Store (#4)",
+      "cat": "shopify",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.phenocal.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://www.menoquil.com/",
+      "label": "Menoquil Store (#10)",
+      "cat": "shopify",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.menoquil.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://www.nuu3.com/",
+      "label": "Nuu3 Store",
+      "cat": "shopify",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.nuu3.com', port=443): Max retries exceeded with ur"
+        }
+      ]
+    },
+    {
+      "url": "https://www.solvadermstore.com/",
+      "label": "Solvaderm Store (#6)",
+      "cat": "shopify",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.solvadermstore.com', port=443): Max retries exceed"
+        }
+      ]
+    },
+    {
+      "url": "https://www.pharmaxalabs.com/",
+      "label": "PharmaxaLabs Store",
+      "cat": "shopify",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.pharmaxalabs.com', port=443): Max retries exceeded"
+        }
+      ]
+    },
+    {
+      "url": "https://www.virectinstore.com/",
+      "label": "Virectin Kill (#1)",
+      "cat": "kill",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.virectinstore.com', port=443): Max retries exceede"
+        }
+      ]
+    },
+    {
+      "url": "https://www.flexoplexstore.com/",
+      "label": "Flexoplex Kill (#2)",
+      "cat": "kill",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.flexoplexstore.com', port=443): Max retries exceed"
+        }
+      ]
+    },
+    {
+      "url": "https://www.provasilstore.com/",
+      "label": "Provasil Kill (#3)",
+      "cat": "kill",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.provasilstore.com', port=443): Max retries exceede"
+        }
+      ]
+    },
+    {
+      "url": "https://www.phenocalstore.com/",
+      "label": "Phenocal Kill (#4)",
+      "cat": "kill",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.phenocalstore.com', port=443): Max retries exceede"
+        }
+      ]
+    },
+    {
+      "url": "https://www.menoquilstore.com/",
+      "label": "Menoquil Kill (#10)",
+      "cat": "kill",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.menoquilstore.com', port=443): Max retries exceede"
+        }
+      ]
+    },
+    {
+      "url": "https://products.solvadermstore.com/stemuderm/",
+      "label": "Stemuderm Kill (#6)",
+      "cat": "solv_kill",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.solvadermstore.com', port=443): Max retries e"
+        }
+      ]
+    },
+    {
+      "url": "https://products.solvadermstore.com/eyevage/",
+      "label": "Eyevage Kill (#15)",
+      "cat": "solv_kill",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.solvadermstore.com', port=443): Max retries e"
+        }
+      ]
+    },
+    {
+      "url": "https://www.zenotone.com/",
+      "label": "Zenotone (#5)",
+      "cat": "tld",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.zenotone.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://www.nutesta.com/",
+      "label": "Nutesta (#7)",
+      "cat": "tld",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.nutesta.com', port=443): Max retries exceeded with"
+        }
+      ]
+    },
+    {
+      "url": "https://www.prostara.com/",
+      "label": "Prostara (#8)",
+      "cat": "tld",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.prostara.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://www.glucoeze.com/",
+      "label": "Glucoeze (#9)",
+      "cat": "tld",
+      "tier": 1,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.glucoeze.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://www.serelaxstore.com/",
+      "label": "Serelax Store",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.serelaxstore.com', port=443): Max retries exceeded"
+        }
+      ]
+    },
+    {
+      "url": "https://www.greenpura.com/",
+      "label": "Greenpura (#34)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.greenpura.com', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://www.myprovasil.com/",
+      "label": "MyProvasil",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.myprovasil.com', port=443): Max retries exceeded w"
+        }
+      ]
+    },
+    {
+      "url": "https://www.colopril.com/",
+      "label": "Colopril (#25)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.colopril.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://www.somulin.store/",
+      "label": "Somulin Store",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.somulin.store', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://www.endmigra.com/",
+      "label": "Endmigra (#31)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.endmigra.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://www.vazoprilstore.com/",
+      "label": "Vazopril Store",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.vazoprilstore.com', port=443): Max retries exceede"
+        }
+      ]
+    },
+    {
+      "url": "https://www.prostarastore.com/",
+      "label": "Prostara Store",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.prostarastore.com', port=443): Max retries exceede"
+        }
+      ]
+    },
+    {
+      "url": "https://www.bonexcin.us/",
+      "label": "Bonexcin US",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.bonexcin.us', port=443): Max retries exceeded with"
+        }
+      ]
+    },
+    {
+      "url": "https://colopril.pharmaxalabs.com/",
+      "label": "Colopril Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='colopril.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://www.colopril.us/",
+      "label": "Colopril US",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.colopril.us', port=443): Max retries exceeded with"
+        }
+      ]
+    },
+    {
+      "url": "https://www.maxolean.com/",
+      "label": "Maxolean (#30)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.maxolean.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://prostara.pharmaxalabs.com/",
+      "label": "Prostara Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='prostara.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://www.ocuvital.com/",
+      "label": "Ocuvital (#16)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.ocuvital.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://www.somulin.com/",
+      "label": "Somulin (#21)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.somulin.com', port=443): Max retries exceeded with"
+        }
+      ]
+    },
+    {
+      "url": "https://www.nufolix.com/",
+      "label": "Nufolix (#14)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.nufolix.com', port=443): Max retries exceeded with"
+        }
+      ]
+    },
+    {
+      "url": "https://www.flexdermalstore.com/",
+      "label": "Flexdermal Store",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.flexdermalstore.com', port=443): Max retries excee"
+        }
+      ]
+    },
+    {
+      "url": "https://www.vazopril.com/",
+      "label": "Vazopril (#13)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.vazopril.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://menoquil.pharmaxalabs.com/",
+      "label": "Menoquil Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='menoquil.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://www.bonexcin.com/",
+      "label": "Bonexcin (#29)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.bonexcin.com', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://www.zenofem.com/",
+      "label": "Zenofem (#27)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.zenofem.com', port=443): Max retries exceeded with"
+        }
+      ]
+    },
+    {
+      "url": "https://www.flexdermal.com/",
+      "label": "Flexdermal (#26)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.flexdermal.com', port=443): Max retries exceeded w"
+        }
+      ]
+    },
+    {
+      "url": "https://www.zenogel.com/",
+      "label": "Zenogel (#28)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.zenogel.com', port=443): Max retries exceeded with"
+        }
+      ]
+    },
+    {
+      "url": "https://www.serelax.com/",
+      "label": "Serelax (#23)",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.serelax.com', port=443): Max retries exceeded with"
+        }
+      ]
+    },
+    {
+      "url": "https://nuu3supergreens.com/",
+      "label": "Nuu3 Super Greens",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='nuu3supergreens.com', port=443): Max retries exceeded "
+        }
+      ]
+    },
+    {
+      "url": "https://www.zenofemstore.com/",
+      "label": "Zenofem Store",
+      "cat": "tld",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.zenofemstore.com', port=443): Max retries exceeded"
+        }
+      ]
+    },
+    {
+      "url": "https://somulin.pharmaxalabs.com/",
+      "label": "Somulin Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='somulin.pharmaxalabs.com', port=443): Max retries exce"
+        }
+      ]
+    },
+    {
+      "url": "https://serelax.pharmaxalabs.com/",
+      "label": "Serelax Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='serelax.pharmaxalabs.com', port=443): Max retries exce"
+        }
+      ]
+    },
+    {
+      "url": "https://flexdermal.pharmaxalabs.com/",
+      "label": "Flexdermal Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='flexdermal.pharmaxalabs.com', port=443): Max retries e"
+        }
+      ]
+    },
+    {
+      "url": "https://provasil.pharmaxalabs.com/",
+      "label": "Provasil Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='provasil.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://glucoeze.pharmaxalabs.com/",
+      "label": "Glucoeze Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='glucoeze.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://products.solvadermstore.com/",
+      "label": "Solvaderm Products Hub",
+      "cat": "solv_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.solvadermstore.com', port=443): Max retries e"
+        }
+      ]
+    },
+    {
+      "url": "https://endmigra.pharmaxalabs.com/",
+      "label": "Endmigra Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='endmigra.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://vazopril.pharmaxalabs.com/",
+      "label": "Vazopril Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='vazopril.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://nufolix.pharmaxalabs.com/",
+      "label": "Nufolix Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='nufolix.pharmaxalabs.com', port=443): Max retries exce"
+        }
+      ]
+    },
+    {
+      "url": "https://products.solvadermstore.com/ace-ferulic/",
+      "label": "Ace Ferulic Kill (#18)",
+      "cat": "solv_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.solvadermstore.com', port=443): Max retries e"
+        }
+      ]
+    },
+    {
+      "url": "https://zenofem.pharmaxalabs.com/",
+      "label": "Zenofem Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='zenofem.pharmaxalabs.com', port=443): Max retries exce"
+        }
+      ]
+    },
+    {
+      "url": "https://nutesta.pharmaxalabs.com/",
+      "label": "Nutesta Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='nutesta.pharmaxalabs.com', port=443): Max retries exce"
+        }
+      ]
+    },
+    {
+      "url": "https://zenotone.pharmaxalabs.com/",
+      "label": "Zenotone Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='zenotone.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://products.solvadermstore.com/revivatone/",
+      "label": "Revivatone Kill (#20)",
+      "cat": "solv_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.solvadermstore.com', port=443): Max retries e"
+        }
+      ]
+    },
+    {
+      "url": "https://zenogel.pharmaxalabs.com/",
+      "label": "Zenogel Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='zenogel.pharmaxalabs.com', port=443): Max retries exce"
+        }
+      ]
+    },
+    {
+      "url": "https://bonexcin.pharmaxalabs.com/",
+      "label": "Bonexcin Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='bonexcin.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://ocuvital.pharmaxalabs.com/",
+      "label": "Ocuvital Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='ocuvital.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://products.solvadermstore.com/stemnucell/",
+      "label": "Stemnucell Kill (#12)",
+      "cat": "solv_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.solvadermstore.com', port=443): Max retries e"
+        }
+      ]
+    },
+    {
+      "url": "https://products.nuu3.com/liver-health-365/",
+      "label": "Liver Health Kill (#33)",
+      "cat": "nuu3_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.nuu3.com', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://products.solvadermstore.com/juvabrite/",
+      "label": "Juvabrite Kill (#22)",
+      "cat": "solv_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.solvadermstore.com', port=443): Max retries e"
+        }
+      ]
+    },
+    {
+      "url": "https://products.nuu3.com/",
+      "label": "Nuu3 Products Hub",
+      "cat": "nuu3_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.nuu3.com', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://products.nuu3.com/natures-superfuel/",
+      "label": "Superfuel Kill (#11)",
+      "cat": "nuu3_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.nuu3.com', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://maxolean.pharmaxalabs.com/",
+      "label": "Maxolean Kill Sub",
+      "cat": "kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='maxolean.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://products.nuu3.com/acv-gummies/",
+      "label": "ACV Gummies Kill (#17)",
+      "cat": "nuu3_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.nuu3.com', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://products.nuu3.com/gut-health-365/",
+      "label": "Gut Health Kill (#19)",
+      "cat": "nuu3_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.nuu3.com', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://products.solvadermstore.com/universal-tinted-moisturizer/",
+      "label": "UTM Kill (#32)",
+      "cat": "solv_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.solvadermstore.com', port=443): Max retries e"
+        }
+      ]
+    },
+    {
+      "url": "https://products.nuu3.com/sleep-support-gummies/",
+      "label": "Sleep Support Kill (#24)",
+      "cat": "nuu3_kill",
+      "tier": 2,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='products.nuu3.com', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://thedailynewsportal.com/",
+      "label": "thedailynewsportal.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='thedailynewsportal.com', port=443): Max retries exceed"
+        }
+      ]
+    },
+    {
+      "url": "https://www.skinformulations.com/",
+      "label": "Skin Formulations",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.skinformulations.com', port=443): Max retries exce"
+        }
+      ]
+    },
+    {
+      "url": "https://5minutehealthfixes.com/",
+      "label": "5minutehealthfixes.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='5minutehealthfixes.com', port=443): Max retries exceed"
+        }
+      ]
+    },
+    {
+      "url": "https://reviews.totalhealthreports.us/",
+      "label": "THR Reviews",
+      "cat": "ppc",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='reviews.totalhealthreports.us', port=443): Max retries"
+        }
+      ]
+    },
+    {
+      "url": "https://tinnitus.pharmaxalabs.com/",
+      "label": "Tinnitus Sub",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='tinnitus.pharmaxalabs.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://www.totalhealthreports.us/",
+      "label": "Total Health Reports",
+      "cat": "ppc",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.totalhealthreports.us', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://blog.pharmaxalabs.com/",
+      "label": "PharmaxaLabs Blog",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='blog.pharmaxalabs.com', port=443): Max retries exceede"
+        }
+      ]
+    },
+    {
+      "url": "https://beauty.totalhealthreports.us/",
+      "label": "THR Beauty",
+      "cat": "ppc",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='beauty.totalhealthreports.us', port=443): Max retries "
+        }
+      ]
+    },
+    {
+      "url": "https://totalshoppingdigest.com/",
+      "label": "Total Shopping Digest",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='totalshoppingdigest.com', port=443): Max retries excee"
+        }
+      ]
+    },
+    {
+      "url": "https://shopping.trustedhealthanswers.com/",
+      "label": "THA Shopping",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='shopping.trustedhealthanswers.com', port=443): Max ret"
+        }
+      ]
+    },
+    {
+      "url": "https://www.healthwebmagazine.com/",
+      "label": "Health Web Magazine",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.healthwebmagazine.com', port=443): Max retries exc"
+        }
+      ]
+    },
+    {
+      "url": "https://healthnewsadvisors.com/",
+      "label": "Health News Advisors",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='healthnewsadvisors.com', port=443): Max retries exceed"
+        }
+      ]
+    },
+    {
+      "url": "https://news.totalhealthreports.us/",
+      "label": "THR News",
+      "cat": "ppc",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='news.totalhealthreports.us', port=443): Max retries ex"
+        }
+      ]
+    },
+    {
+      "url": "https://nutrition.totalhealthreports.us/",
+      "label": "THR Nutrition",
+      "cat": "ppc",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='nutrition.totalhealthreports.us', port=443): Max retri"
+        }
+      ]
+    },
+    {
+      "url": "https://backup.dailyhealthshopping.com/",
+      "label": "Daily Health Backup",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='backup.dailyhealthshopping.com', port=443): Max retrie"
+        }
+      ]
+    },
+    {
+      "url": "https://memoforce.online/",
+      "label": "Memoforce",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='memoforce.online', port=443): Max retries exceeded wit"
+        }
+      ]
+    },
+    {
+      "url": "https://prostastreamreviews.com/",
+      "label": "ProstaStream Reviews",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='prostastreamreviews.com', port=443): Max retries excee"
+        }
+      ]
+    },
+    {
+      "url": "https://blog.totalhealthreports.us/",
+      "label": "THR Blog",
+      "cat": "ppc",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='blog.totalhealthreports.us', port=443): Max retries ex"
+        }
+      ]
+    },
+    {
+      "url": "https://prostastream.online/",
+      "label": "ProstaStream",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='prostastream.online', port=443): Max retries exceeded "
+        }
+      ]
+    },
+    {
+      "url": "https://www.totalhealthreports.com/",
+      "label": "THR .com",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.totalhealthreports.com', port=443): Max retries ex"
+        }
+      ]
+    },
+    {
+      "url": "https://www.trustedhealthanswers.com/",
+      "label": "Trusted Health Answers",
+      "cat": "ppc",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.trustedhealthanswers.com', port=443): Max retries "
+        }
+      ]
+    },
+    {
+      "url": "https://www.virectin.us/",
+      "label": "Virectin US",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='www.virectin.us', port=443): Max retries exceeded with"
+        }
+      ]
+    },
+    {
+      "url": "https://staging.healthwebmagazine.com/",
+      "label": "HWM Staging",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='staging.healthwebmagazine.com', port=443): Max retries"
+        }
+      ]
+    },
+    {
+      "url": "https://themysticwolf.com/",
+      "label": "themysticwolf.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='themysticwolf.com', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://staging.flexoplexstore.com/",
+      "label": "Flexoplex Staging",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='staging.flexoplexstore.com', port=443): Max retries ex"
+        }
+      ]
+    },
+    {
+      "url": "https://beyondthetalk.net/",
+      "label": "beyondthetalk.net",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='beyondthetalk.net', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://besthealthshopping.us/",
+      "label": "Best Health Shopping",
+      "cat": "seo",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='besthealthshopping.us', port=443): Max retries exceede"
+        }
+      ]
+    },
+    {
+      "url": "https://wassupte.com/",
+      "label": "wassupte.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='wassupte.com', port=443): Max retries exceeded with ur"
+        }
+      ]
+    },
+    {
+      "url": "https://casa-tres-amigos-goa.com/",
+      "label": "casa-tres-amigos-goa.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='casa-tres-amigos-goa.com', port=443): Max retries exce"
+        }
+      ]
+    },
+    {
+      "url": "https://shawnboothmeals.com/",
+      "label": "shawnboothmeals.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='shawnboothmeals.com', port=443): Max retries exceeded "
+        }
+      ]
+    },
+    {
+      "url": "https://journalofinfertility.com/",
+      "label": "journalofinfertility.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='journalofinfertility.com', port=443): Max retries exce"
+        }
+      ]
+    },
+    {
+      "url": "https://thierrysanchez.com/",
+      "label": "thierrysanchez.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='thierrysanchez.com', port=443): Max retries exceeded w"
+        }
+      ]
+    },
+    {
+      "url": "https://bionoricusa.com/",
+      "label": "bionoricusa.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='bionoricusa.com', port=443): Max retries exceeded with"
+        }
+      ]
+    },
+    {
+      "url": "https://newnaturalbook.com/",
+      "label": "newnaturalbook.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='newnaturalbook.com', port=443): Max retries exceeded w"
+        }
+      ]
+    },
+    {
+      "url": "https://daxmoypersonaltrainingstudios.com/",
+      "label": "daxmoypersonaltraining.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='daxmoypersonaltrainingstudios.com', port=443): Max ret"
+        }
+      ]
+    },
+    {
+      "url": "https://supremestrengthforsports.com/",
+      "label": "supremestrengthforsports.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='supremestrengthforsports.com', port=443): Max retries "
+        }
+      ]
+    },
+    {
+      "url": "https://thedietitianchoice.com/",
+      "label": "thedietitianchoice.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='thedietitianchoice.com', port=443): Max retries exceed"
+        }
+      ]
+    },
+    {
+      "url": "https://swissnavylube.com/",
+      "label": "swissnavylube.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='swissnavylube.com', port=443): Max retries exceeded wi"
+        }
+      ]
+    },
+    {
+      "url": "https://kcstrengthcoaching.com/",
+      "label": "kcstrengthcoaching.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='kcstrengthcoaching.com', port=443): Max retries exceed"
+        }
+      ]
+    },
+    {
+      "url": "https://jertong.com/",
+      "label": "jertong.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='jertong.com', port=443): Max retries exceeded with url"
+        }
+      ]
+    },
+    {
+      "url": "https://fromzerotoathlete.com/",
+      "label": "fromzerotoathlete.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='fromzerotoathlete.com', port=443): Max retries exceede"
+        }
+      ]
+    },
+    {
+      "url": "https://advancedtrochology.com/",
+      "label": "advancedtrochology.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='advancedtrochology.com', port=443): Max retries exceed"
+        }
+      ]
+    },
+    {
+      "url": "https://metropolitantheclub.com/",
+      "label": "metropolitantheclub.com",
+      "cat": "redirect",
+      "tier": 3,
+      "status": "DOWN",
+      "resp_time": null,
+      "issues": [
+        {
+          "type": "critical",
+          "msg": "Conn: HTTPSConnectionPool(host='metropolitantheclub.com', port=443): Max retries excee"
+        }
+      ]
+    }
+  ]
+}
