@@ -1,9 +1,11 @@
 name: Weekend QA Audit
 
 on:
-  # Runs every Saturday at 8:00 AM EST (1pm UTC)
+  # Runs every Saturday at 8:00 AM UTC (adjust for your timezone)
+  # For EST: 8am EST = 1pm UTC → use "0 13 * * 6"
+  # For PST: 8am PST = 4pm UTC → use "0 16 * * 6"
   schedule:
-    - cron: "0 13 * * 6"
+    - cron: "0 13 * * 6"  # Saturday 8am EST / 1pm UTC
 
   # Allow manual trigger from GitHub UI
   workflow_dispatch:
@@ -11,9 +13,7 @@ on:
 jobs:
   qa-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    timeout-minutes: 90  # Extended for 74 sites + per-site PDFs
 
     steps:
       - name: Checkout repository
@@ -26,9 +26,7 @@ jobs:
           cache: "pip"
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          python -c "import requests; import reportlab; print(f'requests={requests.__version__}, reportlab={reportlab.Version}')"
+        run: pip install -r requirements.txt
 
       - name: Run QA Audit
         env:
@@ -43,7 +41,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: qa-report-${{ github.run_number }}
+          name: qa-reports-${{ github.run_number }}
           path: reports/
           retention-days: 90
-          if-no-files-found: warn
