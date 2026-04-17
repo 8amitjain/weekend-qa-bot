@@ -228,35 +228,44 @@ def check_ssl(url):
 
 
 def check_images(html, base_url):
-    """Find broken images — checks actual image URLs return 200."""
+    """Find broken images — checks actual image URLs return 200. Reports page section."""
     issues = []
     parsed = urlparse(base_url)
 
-    # Find all <img src="...">
-    img_tags = re.findall(r'<img\s+[^>]*?src=["\']([^"\']+)["\'][^>]*?>', html, re.I)
+    # Build a map of image src -> page section by finding each img tag's position
+    img_section_map = {}  # resolved_url -> section_name
+    for m in re.finditer(r'<img\s+[^>]*?src=["\']([^"\']+)["\'][^>]*?>', html, re.I):
+        src = m.group(1)
+        section = _detect_section(html, m.start(), html)
+        # Resolve URL
+        if src.startswith("data:") or src.startswith("{{") or src.startswith("{%") or len(src) < 5:
+            continue
+        if src.startswith("//"):
+            resolved = f"{parsed.scheme}:{src}"
+        elif src.startswith("/"):
+            resolved = f"{parsed.scheme}://{parsed.netloc}{src}"
+        elif not src.startswith("http"):
+            resolved = urljoin(base_url, src)
+        else:
+            resolved = src
+        if resolved not in img_section_map:
+            img_section_map[resolved] = section
 
-    # Also find CSS background images
+    # Also find CSS background images (section detection less precise here)
     bg_imgs = re.findall(r'background(?:-image)?\s*:\s*url\(["\']?([^"\')\s]+)["\']?\)', html, re.I)
-
-    all_imgs = list(set(img_tags + bg_imgs))
-
-    # Filter out data URIs, SVG inline, tracking pixels
-    real_imgs = []
-    for img in all_imgs:
-        if img.startswith("data:"):
+    for img in bg_imgs:
+        if img.startswith("data:") or len(img) < 5:
             continue
-        if img.startswith("{{") or img.startswith("{%"):
-            continue  # template tags
-        if len(img) < 5:
-            continue
-        # Resolve relative URLs
         if img.startswith("//"):
             img = f"{parsed.scheme}:{img}"
         elif img.startswith("/"):
             img = f"{parsed.scheme}://{parsed.netloc}{img}"
         elif not img.startswith("http"):
             img = urljoin(base_url, img)
-        real_imgs.append(img)
+        if img not in img_section_map:
+            img_section_map[img] = "CSS Background"
+
+    real_imgs = list(img_section_map.keys())
 
     # Check up to 20 images
     broken = []
@@ -264,9 +273,11 @@ def check_images(html, base_url):
         try:
             r = req.head(img_url, headers=HDRS, timeout=5, allow_redirects=True)
             if r.status_code >= 400:
-                broken.append(img_url)
+                section = img_section_map.get(img_url, "Unknown")
+                broken.append(f"[{section}] {img_url}")
         except Exception:
-            broken.append(img_url)
+            section = img_section_map.get(img_url, "Unknown")
+            broken.append(f"[{section}] {img_url}")
 
     # Images without alt text
     no_alt_tags = re.findall(r'<img\s+[^>]*?>', html, re.I)
@@ -281,64 +292,134 @@ def check_images(html, base_url):
     return issues, len(real_imgs)
 
 
+def _detect_section(html, tag_match_pos, full_html):
+    """Detect which page section a given position falls within."""
+    # Search backwards from the match position to find the enclosing section
+    preceding = full_html[:tag_match_pos].lower()
+
+    # Check enclosing landmarks (search from nearest to furthest)
+    section_markers = [
+        ("Header / Top Nav", [r'<header', r'<nav', r'class="[^"]*top-?bar', r'class="[^"]*main-?nav',
+                              r'class="[^"]*site-?header', r'id="header', r'id="masthead']),
+        ("Footer", [r'<footer', r'class="[^"]*footer', r'id="footer', r'class="[^"]*site-?footer']),
+        ("Sidebar", [r'class="[^"]*sidebar', r'id="sidebar', r'<aside', r'class="[^"]*widget']),
+        ("Product Section", [r'class="[^"]*product', r'id="product', r'class="[^"]*shopify-section-product',
+                             r'class="[^"]*product-?template']),
+        ("Hero / Banner", [r'class="[^"]*hero', r'class="[^"]*banner', r'class="[^"]*slider',
+                           r'class="[^"]*carousel']),
+        ("Main Content", [r'<main', r'id="main', r'class="[^"]*main-?content', r'id="content',
+                          r'role="main"']),
+    ]
+
+    # Look at the last 2000 chars before the match for the nearest section marker
+    search_window = preceding[-2000:]
+    best_section = "Page Body"
+    best_pos = -1
+
+    for section_name, patterns in section_markers:
+        for pat in patterns:
+            for m in re.finditer(pat, search_window):
+                if m.start() > best_pos:
+                    best_pos = m.start()
+                    best_section = section_name
+
+    return best_section
+
+
 def check_navigation(html, base_url):
-    """Check nav links for broken pages."""
+    """Check nav links for broken pages — reports which section each broken link is in."""
     issues = []
     parsed = urlparse(base_url)
+    html_lower = html.lower()
 
-    # Find links inside <nav>, <header>, or elements with nav-related classes
-    nav_html = ""
-    nav_blocks = re.findall(
-        r'<(?:nav|header)[^>]*>.*?</(?:nav|header)>',
-        html, re.I | re.S
-    )
-    nav_html = " ".join(nav_blocks)
+    # ── Collect links from identifiable page sections ──
+    section_links = {}  # url -> section name
 
-    # Also grab links in common nav class patterns
-    nav_class_blocks = re.findall(
-        r'<[^>]+class=["\'][^"\']*(?:nav|menu|header|topbar)[^"\']*["\'][^>]*>.*?</(?:div|ul|section)>',
-        html, re.I | re.S
-    )
-    nav_html += " ".join(nav_class_blocks)
+    # Define sections to scan with their regex patterns
+    section_defs = [
+        ("Header / Top Nav", [
+            (r'<header[^>]*>.*?</header>', re.I | re.S),
+            (r'<nav[^>]*>.*?</nav>', re.I | re.S),
+            (r'<[^>]+class=["\'][^"\']*(?:main-?nav|top-?bar|site-?header|masthead)[^"\']*["\'][^>]*>.*?</(?:div|ul|section|nav)>', re.I | re.S),
+        ]),
+        ("Footer", [
+            (r'<footer[^>]*>.*?</footer>', re.I | re.S),
+            (r'<[^>]+class=["\'][^"\']*(?:site-?footer|footer-?nav|footer-?menu)[^"\']*["\'][^>]*>.*?</(?:div|ul|section)>', re.I | re.S),
+        ]),
+        ("Sidebar", [
+            (r'<aside[^>]*>.*?</aside>', re.I | re.S),
+            (r'<[^>]+class=["\'][^"\']*sidebar[^"\']*["\'][^>]*>.*?</(?:div|section)>', re.I | re.S),
+        ]),
+        ("Product Section", [
+            (r'<[^>]+class=["\'][^"\']*product[^"\']*["\'][^>]*>.*?</(?:div|section)>', re.I | re.S),
+        ]),
+        ("Main Content", [
+            (r'<main[^>]*>.*?</main>', re.I | re.S),
+        ]),
+    ]
 
-    if not nav_html:
-        # Fallback: check first 50 links on page
-        nav_html = html
+    found_any_section = False
+    for section_name, patterns in section_defs:
+        for pat, flags in patterns:
+            for block_match in re.finditer(pat, html, flags):
+                found_any_section = True
+                block_html = block_match.group(0)
+                links_in_block = re.findall(r'href=["\']([^"\'#]+)["\']', block_html, re.I)
+                for link in links_in_block:
+                    if link.startswith("mailto:") or link.startswith("tel:") or link.startswith("javascript:"):
+                        continue
+                    if link.startswith("/"):
+                        full = f"{parsed.scheme}://{parsed.netloc}{link}"
+                    elif parsed.netloc in link:
+                        full = link
+                    else:
+                        continue
+                    # Keep the most specific section (don't overwrite Product with Main Content)
+                    if full not in section_links:
+                        section_links[full] = section_name
 
-    links = re.findall(r'href=["\']([^"\'#]+)["\']', nav_html, re.I)
-
-    # Resolve and deduplicate
-    resolved = set()
-    for link in links:
-        if link.startswith("mailto:") or link.startswith("tel:") or link.startswith("javascript:"):
-            continue
-        if link.startswith("/"):
-            resolved.add(f"{parsed.scheme}://{parsed.netloc}{link}")
-        elif parsed.netloc in link:
-            resolved.add(link)
+    # Fallback: if no sections found, grab all internal links labeled "Page Body"
+    if not found_any_section:
+        all_links = re.findall(r'href=["\']([^"\'#]+)["\']', html, re.I)
+        for link in all_links:
+            if link.startswith("mailto:") or link.startswith("tel:") or link.startswith("javascript:"):
+                continue
+            if link.startswith("/"):
+                full = f"{parsed.scheme}://{parsed.netloc}{link}"
+            elif parsed.netloc in link:
+                full = link
+            else:
+                continue
+            if full not in section_links:
+                section_links[full] = "Page Body"
 
     # Check up to 15 nav links
-    nav_links = list(resolved)[:15]
+    nav_links = list(section_links.keys())[:15]
     broken = []
     for link in nav_links:
         try:
             r = req.head(link, headers=HDRS, timeout=6, allow_redirects=True)
             if r.status_code >= 400:
-                broken.append(f"{link} ({r.status_code})")
+                section = section_links.get(link, "Unknown")
+                broken.append(f"[{section}] {link} ({r.status_code})")
         except Exception:
-            broken.append(f"{link} (timeout)")
+            section = section_links.get(link, "Unknown")
+            broken.append(f"[{section}] {link} (timeout)")
 
     if broken:
         issues.append(("critical", f"{len(broken)} broken navigation link(s)", broken[:5]))
 
-    if not nav_blocks:
+    nav_blocks = re.findall(r'<(?:nav|header)[^>]*>.*?</(?:nav|header)>', html, re.I | re.S)
+    if not nav_blocks and not found_any_section:
         issues.append(("warning", "No <nav> or <header> element found", []))
 
     return issues, len(nav_links)
 
 
-def check_meta(html, url):
-    """Minimal meta checks — only critical issues, skip basic SEO noise."""
+def check_meta(html, url, cat=""):
+    """Minimal meta checks — only critical issues, skip basic SEO noise.
+    Kill pages and PPC sites are intentionally noindex for Google — skip that warning.
+    Instead, check AI bot crawlability for all sites."""
     issues = []
 
     # Viewport (critical for mobile purchases)
@@ -357,10 +438,72 @@ def check_meta(html, url):
     if re.search(r"coming\s+soon", html, re.I) and "<title" in html.lower():
         issues.append(("warning", "'Coming soon' text detected", []))
 
-    # Robots noindex on a sales page is critical
+    # Robots noindex — only warn for Shopify main stores, TLD, and SEO sites
+    # Kill pages and PPC sites are INTENTIONALLY noindex for Google (funnel design)
+    intentional_noindex_cats = {"kill", "solv_kill", "nuu3_kill", "ppc"}
     robots = re.search(r'<meta\s+name=["\']robots["\']\s+content=["\']([^"\']*)["\']', html, re.I)
     if robots and "noindex" in robots.group(1).lower():
-        issues.append(("warning", "Page is set to noindex — Google won't index this page", []))
+        if cat not in intentional_noindex_cats:
+            issues.append(("warning", "Page is set to noindex — Google won't index this page", []))
+        # For intentional noindex pages, just note it as info
+        else:
+            issues.append(("info", "Page is noindex (expected for this page type)", []))
+
+    # ── AI Bot Crawlability Check ──
+    # Check robots.txt for AI crawler blocks (ChatGPT, Claude, Perplexity, etc.)
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    ai_bots_blocked = []
+    ai_bots = {
+        "GPTBot": "ChatGPT / OpenAI",
+        "ChatGPT-User": "ChatGPT browsing",
+        "Claude-Web": "Claude / Anthropic",
+        "ClaudeBot": "Claude / Anthropic",
+        "anthropic-ai": "Anthropic",
+        "PerplexityBot": "Perplexity AI",
+        "Bytespider": "TikTok / ByteDance AI",
+        "CCBot": "Common Crawl (AI training data)",
+        "Google-Extended": "Google Gemini / AI",
+        "cohere-ai": "Cohere AI",
+    }
+    try:
+        robots_resp = req.get(f"{base}/robots.txt", headers=HDRS, timeout=5)
+        if robots_resp.status_code == 200:
+            robots_txt = robots_resp.text.lower()
+            current_agent = None
+            for line in robots_txt.split("\n"):
+                line = line.strip()
+                if line.startswith("user-agent:"):
+                    current_agent = line.split(":", 1)[1].strip()
+                elif line.startswith("disallow:") and current_agent:
+                    path = line.split(":", 1)[1].strip()
+                    if path == "/" or path == "/*":
+                        # This agent is fully blocked
+                        for bot_key, bot_name in ai_bots.items():
+                            if bot_key.lower() == current_agent or current_agent == "*":
+                                if current_agent == "*":
+                                    # Only flag wildcard if it blocks root
+                                    pass  # Don't double-count, check specific bots
+                                else:
+                                    ai_bots_blocked.append(bot_name)
+            # Deduplicate
+            ai_bots_blocked = list(set(ai_bots_blocked))
+            if ai_bots_blocked:
+                blocked_names = ", ".join(ai_bots_blocked[:4])
+                remaining = len(ai_bots_blocked) - 4
+                suffix = f" +{remaining} more" if remaining > 0 else ""
+                issues.append(("warning",
+                    f"AI bots blocked in robots.txt: {blocked_names}{suffix}",
+                    [f"{base}/robots.txt"]))
+            else:
+                # Check if wildcard blocks everything (would block AI too)
+                if re.search(r'user-agent:\s*\*\s*\n\s*disallow:\s*/\s*$',
+                             robots_txt, re.M):
+                    issues.append(("warning",
+                        "robots.txt blocks ALL bots (including AI crawlers) with wildcard Disallow: /",
+                        [f"{base}/robots.txt"]))
+    except Exception:
+        pass  # robots.txt not reachable — not critical
 
     return issues
 
@@ -524,10 +667,11 @@ def check_ecommerce(html, url):
         issues.append(("warning", "No payment badges or trust seals found — may reduce checkout confidence", []))
 
     # ── 7. Form/CTA Validation ──
-    # Check if product forms have valid action URLs
-    form_actions = re.findall(r'<form[^>]*action=["\']([^"\']+)["\'][^>]*>', html, re.I)
-    for action_url in form_actions:
+    # Check if product forms have valid action URLs — with section detection
+    for form_match in re.finditer(r'<form[^>]*action=["\']([^"\']+)["\'][^>]*>', html, re.I):
+        action_url = form_match.group(1)
         if any(kw in action_url.lower() for kw in ['cart', 'checkout', 'order', 'purchase']):
+            section = _detect_section(html, form_match.start(), html)
             if action_url.startswith("/"):
                 full_url = f"{base}{action_url}"
             elif action_url.startswith("http"):
@@ -537,9 +681,9 @@ def check_ecommerce(html, url):
             try:
                 r = req.head(full_url, headers=HDRS, timeout=6, allow_redirects=True)
                 if r.status_code >= 400:
-                    issues.append(("critical", f"Cart/checkout form action returns {r.status_code}", [full_url]))
+                    issues.append(("critical", f"Cart/checkout form action returns {r.status_code} [{section}]", [full_url]))
             except Exception:
-                issues.append(("warning", f"Cart/checkout form action unreachable", [full_url]))
+                issues.append(("warning", f"Cart/checkout form action unreachable [{section}]", [full_url]))
 
     # ── 8. Quantity Selector ──
     qty_patterns = [
@@ -650,7 +794,8 @@ def audit_site(site):
         result["nav_links_checked"] = nav_count
 
         # 5. Minimal meta checks (viewport, mixed content, placeholder — skip SEO)
-        result["issues"].extend(check_meta(html, url))
+        #    Pass category so kill/PPC pages don't get noindex warnings
+        result["issues"].extend(check_meta(html, url, cat=site["cat"]))
 
         # 6. E-COMMERCE CHECKS (cart, checkout, upsell, pricing, buy buttons)
         ecom_issues, ecom_flags = check_ecommerce(html, url)
@@ -683,24 +828,33 @@ def generate_site_pdf(result):
     )
 
     buf = io.BytesIO()
+    PAGE_W, PAGE_H = letter
+    L_MARGIN = 0.5 * inch
+    R_MARGIN = 0.5 * inch
+    USABLE_W = PAGE_W - L_MARGIN - R_MARGIN  # ~7.5 inches
+
     doc = SimpleDocTemplate(
         buf, pagesize=letter,
-        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
-        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+        topMargin=0.4 * inch, bottomMargin=0.4 * inch,
+        leftMargin=L_MARGIN, rightMargin=R_MARGIN,
     )
     styles = getSampleStyleSheet()
 
-    # Custom styles
-    styles.add(ParagraphStyle("Title2", parent=styles["Title"], fontSize=22,
+    # Custom styles — tighter leading, word-wrap friendly
+    styles.add(ParagraphStyle("Title2", parent=styles["Title"], fontSize=20,
         textColor=HexColor("#1a1a2e"), alignment=TA_CENTER, spaceAfter=4))
-    styles.add(ParagraphStyle("Sub", parent=styles["Normal"], fontSize=11,
-        textColor=HexColor("#666"), alignment=TA_CENTER, spaceAfter=4))
-    styles.add(ParagraphStyle("SH", parent=styles["Heading2"], fontSize=14,
-        textColor=HexColor("#1a1a2e"), spaceBefore=14, spaceAfter=6))
-    styles.add(ParagraphStyle("Issue", parent=styles["Normal"], fontSize=9.5,
-        leading=13, spaceBefore=2, spaceAfter=2, leftIndent=12))
-    styles.add(ParagraphStyle("Detail", parent=styles["Normal"], fontSize=8.5,
-        leading=11, textColor=HexColor("#555"), leftIndent=24))
+    styles.add(ParagraphStyle("Sub", parent=styles["Normal"], fontSize=10,
+        textColor=HexColor("#666"), alignment=TA_CENTER, spaceAfter=3))
+    styles.add(ParagraphStyle("SH", parent=styles["Heading2"], fontSize=13,
+        textColor=HexColor("#1a1a2e"), spaceBefore=12, spaceAfter=5))
+    styles.add(ParagraphStyle("Issue", parent=styles["Normal"], fontSize=9,
+        leading=12, spaceBefore=2, spaceAfter=2, leftIndent=10,
+        wordWrap='CJK'))  # CJK word-wrap breaks long URLs
+    styles.add(ParagraphStyle("Detail", parent=styles["Normal"], fontSize=8,
+        leading=10, textColor=HexColor("#555"), leftIndent=20,
+        wordWrap='CJK'))  # Ensures long URLs wrap instead of overflowing
+    styles.add(ParagraphStyle("SectionTag", parent=styles["Normal"], fontSize=7.5,
+        leading=9, textColor=HexColor("#1565c0"), leftIndent=20))
     styles.add(ParagraphStyle("Footer", parent=styles["Normal"], fontSize=7.5,
         textColor=HexColor("#999"), alignment=TA_CENTER))
 
@@ -722,6 +876,7 @@ def generate_site_pdf(result):
 
     # ── Summary Stats ──
     counts = result.get("counts", {})
+    stat_col_w = USABLE_W / 4.0
     stat_data = [[
         Paragraph(f'<font size="16" color="#c62828"><b>{counts.get("critical", 0)}</b></font>', styles["Sub"]),
         Paragraph(f'<font size="16" color="#f57f17"><b>{counts.get("warning", 0)}</b></font>', styles["Sub"]),
@@ -733,7 +888,7 @@ def generate_site_pdf(result):
         Paragraph("Info", styles["Footer"]),
         Paragraph("Load Time", styles["Footer"]),
     ]]
-    st = Table(stat_data, colWidths=[1.5 * inch] * 4)
+    st = Table(stat_data, colWidths=[stat_col_w] * 4)
     st.setStyle(TableStyle([
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -771,7 +926,8 @@ def generate_site_pdf(result):
             _flag(ecom.get("has_trust"), "Trust"),
         ]
         ecom_row = [[Paragraph(item, styles["Footer"]) for item in ecom_items]]
-        et = Table(ecom_row, colWidths=[1.0 * inch] * 6)
+        ecom_col_w = USABLE_W / 6.0
+        et = Table(ecom_row, colWidths=[ecom_col_w] * 6)
         et.setStyle(TableStyle([
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
@@ -817,12 +973,26 @@ def generate_site_pdf(result):
                 els = [Paragraph(
                     f'<font color="{sev_color}"><b>[{icon}]</b></font> {msg}',
                     styles["Issue"])]
-                # Show detail URLs (broken images/links)
+                # Show detail URLs with section tags — split section and URL
                 for detail in details[:3]:
-                    short = detail if len(detail) < 80 else detail[:77] + "..."
-                    els.append(Paragraph(
-                        f'<font color="#888">&rarr; {short}</font>',
-                        styles["Detail"]))
+                    # Parse out [Section] prefix if present
+                    sec_match = re.match(r'\[([^\]]+)\]\s*(.*)', detail)
+                    if sec_match:
+                        section_name = sec_match.group(1)
+                        url_part = sec_match.group(2)
+                        els.append(Paragraph(
+                            f'<font color="#1565c0"><b>{section_name}</b></font>',
+                            styles["SectionTag"]))
+                        # Truncate URL but keep it readable
+                        short_url = url_part if len(url_part) < 90 else url_part[:87] + "..."
+                        els.append(Paragraph(
+                            f'<font color="#888">&rarr; {short_url}</font>',
+                            styles["Detail"]))
+                    else:
+                        short = detail if len(detail) < 90 else detail[:87] + "..."
+                        els.append(Paragraph(
+                            f'<font color="#888">&rarr; {short}</font>',
+                            styles["Detail"]))
                 story.append(KeepTogether(els))
 
     # ── Footer ──
