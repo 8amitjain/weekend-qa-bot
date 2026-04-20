@@ -46,6 +46,7 @@ Generates individual PDF reports per site and posts each to
 Slack #automated-qc, tagging @Amit.
 
 Updated: 2026-04-20 — added compliance checks, fixed 429 false positives, fixed tagging.
+Updated: 2026-04-20 — added 406 to non-broken codes, removed quantity selector info warning.
 """
 
 import requests as req
@@ -354,8 +355,8 @@ def _extract_link_text(html, href):
     return None
 
 
-# HTTP status codes that indicate rate limiting, NOT a broken link
-RATE_LIMIT_CODES = {429, 503}
+# HTTP status codes that are NOT broken links (rate limits, redirects, etc.)
+RATE_LIMIT_CODES = {406, 429, 503}
 
 
 def check_navigation(html, base_url):
@@ -731,7 +732,7 @@ def check_ecommerce(html, url):
             except Exception:
                 issues.append(("warning", f"Cart/checkout form action unreachable [{section}]", [full_url]))
 
-    # ── 8. Quantity Selector ──
+    # ── 8. Quantity Selector (detection only, no issue flagged) ──
     qty_patterns = [
         r'type=["\']number["\'][^>]*(?:quantity|qty)',
         r'(?:quantity|qty)[^>]*type=["\']number["\']',
@@ -740,8 +741,6 @@ def check_ecommerce(html, url):
         r'data-quantity',
     ]
     has_qty = any(re.search(p, html_lower) for p in qty_patterns)
-    if has_atc and not has_qty:
-        issues.append(("info", "Add-to-cart present but no quantity selector found", []))
 
     return issues, {
         "has_atc": has_atc,
