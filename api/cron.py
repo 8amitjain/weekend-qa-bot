@@ -707,9 +707,16 @@ def check_ecommerce(html, url):
 
     # ── 7. Form/CTA Validation ──
     # Check if product forms have valid action URLs — with section detection
+    # Skip known POST-only endpoints (Shopify /cart/add, /cart, /checkout etc.)
+    # — these always return 400 on HEAD/GET since they require POST + form data
+    POST_ONLY_PATHS = {'/cart/add', '/cart', '/checkout', '/checkout/'}
     for form_match in re.finditer(r'<form[^>]*action=["\']([^"\']+)["\'][^>]*>', html, re.I):
         action_url = form_match.group(1)
         if any(kw in action_url.lower() for kw in ['cart', 'checkout', 'order', 'purchase']):
+            # Skip POST-only form endpoints — HEAD will always 400 on these
+            action_path = action_url.split('?')[0].rstrip('/')
+            if action_path in POST_ONLY_PATHS or action_path + '/' in POST_ONLY_PATHS:
+                continue
             section = _detect_section(html, form_match.start(), html)
             if action_url.startswith("/"):
                 full_url = f"{base}{action_url}"
