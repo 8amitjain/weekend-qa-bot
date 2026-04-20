@@ -14,11 +14,22 @@ Checks all active sites across PharmaxaLabs / Solvaderm / Nuu3:
 
   CORE QA (kept):
   - Broken images
-  - Broken navigation / internal links
+  - Broken navigation / internal links (with link text for locating)
   - SSL certificate health
   - Page load performance
   - Mixed content
   - Placeholder text detection
+
+  COMPLIANCE & TRUST (new):
+  - FDA disclaimer presence (required for supplement pages)
+  - Terms of Service / Privacy Policy links
+  - Return/refund policy link
+  - Contact information (phone, email, contact page)
+  - HTTPS enforcement (HTTP → HTTPS redirect)
+  - Redirect chain detection
+  - Social media link validation
+  - Reviews / social proof elements
+  - Proper 404 page (not soft-404 or homepage redirect)
 
   REMOVED (skip basic SEO noise):
   - No H1 checks
@@ -27,10 +38,14 @@ Checks all active sites across PharmaxaLabs / Solvaderm / Nuu3:
   - No Open Graph / schema checks
   - No favicon checks
 
+  FIXED:
+  - 429/503 rate-limit responses no longer flagged as broken links
+  - Broken links include link text/title for easy locating
+
 Generates individual PDF reports per site and posts each to
 Slack #automated-qc, tagging @Amit.
 
-Updated: 2026-04-17 — e-commerce focused, skip basic SEO.
+Updated: 2026-04-20 — added compliance checks, fixed 429 false positives, fixed tagging.
 """
 
 import requests as req
@@ -50,7 +65,7 @@ from collections import defaultdict
 TIMEOUT = 12
 MAX_WORKERS = 10
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL_ID", "C0AP3RF4J4B")
-AMIT_ID = "D05JGP5EV9R"
+AMIT_ID = "U05K6HRC4V6"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
 HDRS = {"User-Agent": UA}
 TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -272,7 +287,8 @@ def check_images(html, base_url):
     for img_url in real_imgs[:20]:
         try:
             r = req.head(img_url, headers=HDRS, timeout=5, allow_redirects=True)
-            if r.status_code >= 400:
+            # Skip rate-limit codes (429, 503) — NOT broken images
+            if r.status_code >= 400 and r.status_code not in RATE_LIMIT_CODES:
                 section = img_section_map.get(img_url, "Unknown")
                 broken.append(f"[{section}] {img_url}")
         except Exception:
@@ -324,6 +340,22 @@ def _detect_section(html, tag_match_pos, full_html):
                     best_section = section_name
 
     return best_section
+
+
+def _extract_link_text(html, href):
+    """Extract the visible text of an <a> tag by its href, for human-readable broken link reports."""
+    # Find <a ...href="THE_HREF"...>LINK TEXT</a>
+    escaped = re.escape(href)
+    m = re.search(rf'<a[^>]*href=["\'](?:[^"\']*?{escaped})["\'][^>]*>(.*?)</a>', html, re.I | re.S)
+    if m:
+        text = re.sub(r'<[^>]+>', '', m.group(1)).strip()  # strip inner HTML tags
+        if text and len(text) < 120:
+            return text
+    return None
+
+
+# HTTP status codes that indicate rate limiting, NOT a broken link
+RATE_LIMIT_CODES = {429, 503}
 
 
 def check_navigation(html, base_url):
@@ -399,12 +431,17 @@ def check_navigation(html, base_url):
     for link in nav_links:
         try:
             r = req.head(link, headers=HDRS, timeout=6, allow_redirects=True)
-            if r.status_code >= 400:
+            # Skip rate-limit codes (429, 503) — these are NOT broken links
+            if r.status_code >= 400 and r.status_code not in RATE_LIMIT_CODES:
                 section = section_links.get(link, "Unknown")
-                broken.append(f"[{section}] {link} ({r.status_code})")
+                link_text = _extract_link_text(html, link) or _extract_link_text(html, urlparse(link).path)
+                text_hint = f' "{link_text}"' if link_text else ""
+                broken.append(f"[{section}] {link} ({r.status_code}){text_hint}")
         except Exception:
             section = section_links.get(link, "Unknown")
-            broken.append(f"[{section}] {link} (timeout)")
+            link_text = _extract_link_text(html, link) or _extract_link_text(html, urlparse(link).path)
+            text_hint = f' "{link_text}"' if link_text else ""
+            broken.append(f"[{section}] {link} (timeout){text_hint}")
 
     if broken:
         issues.append(("critical", f"{len(broken)} broken navigation link(s)", broken[:5]))
@@ -562,7 +599,7 @@ def check_ecommerce(html, url):
             ck_url = urljoin(url, ck_url)
         try:
             r = req.head(ck_url, headers=HDRS, timeout=6, allow_redirects=True)
-            if r.status_code >= 400:
+            if r.status_code >= 400 and r.status_code not in RATE_LIMIT_CODES:
                 broken_checkout.append(f"{ck_url} ({r.status_code})")
         except Exception:
             broken_checkout.append(f"{ck_url} (timeout)")
@@ -616,7 +653,7 @@ def check_ecommerce(html, url):
             u_url = urljoin(url, u_url)
         try:
             r = req.head(u_url, headers=HDRS, timeout=6, allow_redirects=True)
-            if r.status_code >= 400:
+            if r.status_code >= 400 and r.status_code not in RATE_LIMIT_CODES:
                 broken_upsell.append(f"{u_url} ({r.status_code})")
         except Exception:
             broken_upsell.append(f"{u_url} (timeout)")
@@ -634,7 +671,9 @@ def check_ecommerce(html, url):
         # Check /cart.js endpoint
         try:
             r = req.get(f"{base}/cart.js", headers=HDRS, timeout=6)
-            if r.status_code != 200:
+            if r.status_code in RATE_LIMIT_CODES:
+                pass  # Rate-limited, not broken
+            elif r.status_code != 200:
                 issues.append(("critical", f"Shopify /cart.js returns {r.status_code} — cart may be broken", []))
             else:
                 try:
@@ -680,7 +719,7 @@ def check_ecommerce(html, url):
                 full_url = urljoin(url, action_url)
             try:
                 r = req.head(full_url, headers=HDRS, timeout=6, allow_redirects=True)
-                if r.status_code >= 400:
+                if r.status_code >= 400 and r.status_code not in RATE_LIMIT_CODES:
                     issues.append(("critical", f"Cart/checkout form action returns {r.status_code} [{section}]", [full_url]))
             except Exception:
                 issues.append(("warning", f"Cart/checkout form action unreachable [{section}]", [full_url]))
@@ -728,6 +767,150 @@ def check_performance(http_result, html):
             issues.append(("warning", f"Very large HTML: {round(kb)}KB (target <500KB)", []))
         elif kb > 500:
             issues.append(("info", f"Large HTML: {round(kb)}KB", []))
+
+    return issues
+
+
+def check_compliance(html, url, cat=""):
+    """Compliance & trust checks critical for health supplement e-commerce sites."""
+    issues = []
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    html_lower = html.lower()
+
+    # ── 1. FDA Disclaimer (required for supplement sites) ──
+    fda_patterns = [
+        r'fda', r'food\s+and\s+drug\s+administration',
+        r'not\s+(?:been\s+)?(?:evaluated|approved)\s+by',
+        r'(?:diagnose|treat|cure|prevent)\s+any\s+disease',
+        r'dietary\s+supplement',
+        r'these?\s+statements?\s+have\s+not\s+been',
+    ]
+    has_fda = sum(1 for p in fda_patterns if re.search(p, html_lower))
+    # Need at least 2 matches to count as a real FDA disclaimer (not just a random mention)
+    if has_fda < 2:
+        # Only flag for product/shopping pages (not PPC/SEO content sites)
+        if cat in ("shopify", "tld", "kill", "solv_kill", "nuu3_kill"):
+            issues.append(("warning", "No FDA disclaimer found — required for supplement product pages", []))
+
+    # ── 2. Terms of Service / Privacy Policy pages ──
+    terms_patterns = [
+        r'href=["\'][^"\']*(?:terms|tos|terms-of-service|terms-and-conditions|terms_of_service)[^"\']*["\']',
+    ]
+    privacy_patterns = [
+        r'href=["\'][^"\']*(?:privacy|privacy-policy|privacy_policy)[^"\']*["\']',
+    ]
+    has_terms = any(re.search(p, html_lower) for p in terms_patterns)
+    has_privacy = any(re.search(p, html_lower) for p in privacy_patterns)
+
+    if not has_terms:
+        issues.append(("warning", "No Terms of Service link found on page", []))
+    if not has_privacy:
+        issues.append(("warning", "No Privacy Policy link found on page", []))
+
+    # ── 3. Return / Refund Policy ──
+    refund_patterns = [
+        r'href=["\'][^"\']*(?:refund|return|return-policy|refund-policy|guarantee)[^"\']*["\']',
+        r'(?:refund|return)\s+policy',
+        r'money[\s-]?back[\s-]?guarantee',
+    ]
+    has_refund = any(re.search(p, html_lower) for p in refund_patterns)
+    if not has_refund and cat in ("shopify", "tld", "kill", "solv_kill", "nuu3_kill"):
+        issues.append(("warning", "No return/refund policy link found — important for e-commerce trust", []))
+
+    # ── 4. Contact Information ──
+    has_phone = bool(re.search(r'(?:tel:|phone|call\s+us|[\(\+]?\d{1,3}[\s\-\.]?\(?\d{3}\)?[\s\-\.]\d{3}[\s\-\.]\d{4})', html_lower))
+    has_email = bool(re.search(r'mailto:|(?:contact|support|info|help)@', html_lower))
+    has_contact_link = bool(re.search(r'href=["\'][^"\']*(?:contact|support|help)[^"\']*["\']', html_lower))
+
+    if not has_phone and not has_email and not has_contact_link:
+        issues.append(("warning", "No contact info found (no phone, email, or contact page link)", []))
+
+    # ── 5. HTTPS Enforcement ──
+    # Check if HTTP version redirects to HTTPS
+    if url.startswith("https://"):
+        http_url = url.replace("https://", "http://", 1)
+        try:
+            r = req.head(http_url, headers=HDRS, timeout=6, allow_redirects=False)
+            if r.status_code in (301, 302, 307, 308):
+                location = r.headers.get("Location", "")
+                if not location.startswith("https://"):
+                    issues.append(("warning", f"HTTP does not redirect to HTTPS (redirects to {location[:80]})", []))
+            elif r.status_code == 200:
+                issues.append(("critical", "Site is accessible over HTTP without redirect to HTTPS — insecure for e-commerce", []))
+        except Exception:
+            pass  # Can't reach HTTP version, which is fine
+
+    # ── 6. Redirect Chain Detection ──
+    try:
+        r = req.get(url, headers=HDRS, timeout=TIMEOUT, allow_redirects=True)
+        if len(r.history) > 2:
+            chain = " → ".join([str(resp.status_code) for resp in r.history])
+            issues.append(("warning", f"Redirect chain detected ({len(r.history)} hops: {chain}) — slows page load", []))
+    except Exception:
+        pass
+
+    # ── 7. Social Media Links ──
+    social_patterns = {
+        "Facebook": r'href=["\'][^"\']*facebook\.com[^"\']*["\']',
+        "Instagram": r'href=["\'][^"\']*instagram\.com[^"\']*["\']',
+        "Twitter/X": r'href=["\'][^"\']*(?:twitter\.com|x\.com)[^"\']*["\']',
+        "YouTube": r'href=["\'][^"\']*youtube\.com[^"\']*["\']',
+    }
+    broken_social = []
+    for platform, pat in social_patterns.items():
+        matches = re.findall(pat, html, re.I)
+        for match in matches[:1]:  # Check first link per platform
+            social_url = re.search(r'href=["\']([^"\']+)["\']', match)
+            if social_url:
+                try:
+                    sr = req.head(social_url.group(1), headers=HDRS, timeout=6, allow_redirects=True)
+                    if sr.status_code >= 400 and sr.status_code not in RATE_LIMIT_CODES:
+                        broken_social.append(f"{platform}: {social_url.group(1)} ({sr.status_code})")
+                except Exception:
+                    pass  # Social sites often block HEAD requests, don't flag
+
+    if broken_social:
+        issues.append(("warning", f"{len(broken_social)} broken social media link(s)", broken_social[:3]))
+
+    # ── 8. Reviews / Social Proof ──
+    review_patterns = [
+        r'(?:review|testimonial|rating|customer[\s_-]?(?:review|feedback|story))',
+        r'(?:star[\s_-]?rating|verified[\s_-]?(?:buyer|purchase|review))',
+        r'(?:trustpilot|reviews\.io|judge\.me|yotpo|stamped)',
+    ]
+    has_reviews = any(re.search(p, html_lower) for p in review_patterns)
+    if not has_reviews and cat in ("shopify", "tld", "kill", "solv_kill", "nuu3_kill"):
+        issues.append(("info", "No reviews or social proof elements detected on page", []))
+
+    return issues
+
+
+def check_404_page(url):
+    """Check if site has a proper 404 page (not a generic server error or redirect to homepage)."""
+    issues = []
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    fake_path = f"{base}/this-page-should-not-exist-qa-test-{int(time.time())}"
+
+    try:
+        r = req.get(fake_path, headers=HDRS, timeout=8, allow_redirects=True)
+        if r.status_code == 200:
+            # Returned 200 for a page that shouldn't exist — soft 404 or homepage redirect
+            if r.url == url or r.url == base + "/" or r.url == base:
+                issues.append(("warning", "Non-existent pages redirect to homepage instead of showing 404 — bad for SEO", []))
+            else:
+                # Check if the page content looks like a generic page (not a proper 404)
+                if "404" not in r.text[:5000] and "not found" not in r.text[:5000].lower():
+                    issues.append(("warning", "Soft 404 — non-existent page returns HTTP 200 without '404' or 'not found' message", []))
+        elif r.status_code == 404:
+            pass  # Good — proper 404
+        elif r.status_code in RATE_LIMIT_CODES:
+            pass  # Rate limited
+        elif r.status_code >= 500:
+            issues.append(("warning", f"Non-existent pages return server error ({r.status_code}) instead of 404", []))
+    except Exception:
+        pass
 
     return issues
 
@@ -804,6 +987,12 @@ def audit_site(site):
 
         # 7. Performance
         result["issues"].extend(check_performance(http, html))
+
+        # 8. COMPLIANCE — FDA disclaimer, terms/privacy, contact info, HTTPS, redirects
+        result["issues"].extend(check_compliance(html, url, cat=site["cat"]))
+
+        # 9. 404 PAGE QUALITY — proper 404 vs soft-404 or homepage redirect
+        result["issues"].extend(check_404_page(url))
 
     # Determine status
     crits = sum(1 for t, _, _ in result["issues"] if t == "critical")
@@ -892,7 +1081,6 @@ def generate_site_pdf(result):
     st.setStyle(TableStyle([
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LINEBELOW", (0, 0), (-1, 0), 0.5, HexColor("#e0e0e0")),
         ("TOPPADDING", (0, 0), (-1, 0), 8),
         ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
     ]))
@@ -1224,11 +1412,11 @@ def _post_text_fallback(hdrs, channel, thread_ts, result):
     """Post a text summary of site issues as fallback when PDF upload fails."""
     issues_text = []
     for sev, msg, _ in result["issues"][:10]:
-        icon = ":red_circle:" if sev == "critical" else ":warning:" if sev == "warning" else ":information_source:"
-        issues_text.append(f"  {icon} {msg[:100]}")
+        tag = "[CRITICAL]" if sev == "critical" else "[WARNING]" if sev == "warning" else "[INFO]"
+        issues_text.append(f"  {tag} {msg[:100]}")
 
     text = (
-        f":page_facing_up: *{result['label']}* [{result['status']}] — "
+        f"*{result['label']}* [{result['status']}] — "
         f"{result['counts'].get('critical', 0)} critical, "
         f"{result['counts'].get('warning', 0)} warnings\n"
         + "\n".join(issues_text)
@@ -1271,9 +1459,9 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
             ecom_issues = [m for t, m, _ in r["issues"] if t == "critical" and
                           any(kw in m.lower() for kw in ["cart", "checkout", "buy", "order", "price", "upsell", "purchase"])]
             top_issue = ecom_issues[0] if ecom_issues else next((m for t, m, _ in r["issues"] if t == "critical"), "Site down")
-            crit_lines.append(f"  :red_circle: *{r['label']}*: {top_issue[:70]}")
+            crit_lines.append(f"  [CRITICAL] *{r['label']}*: {top_issue[:70]}")
 
-    crit_text = "\n".join(crit_lines[:15]) if crit_lines else "  :white_check_mark: None — all clear!"
+    crit_text = "\n".join(crit_lines[:15]) if crit_lines else "  [PASS] None — all clear!"
 
     # Count ecommerce-specific issues
     ecom_broken = sum(1 for r in all_results
@@ -1281,17 +1469,17 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
                or "purchase" in m.lower() for t, m, _ in r["issues"] if t == "critical"))
 
     msg = (
-        f":shopping_trolley: *Weekend E-Commerce QA Audit — {TODAY}*\n\n"
+        f"*Weekend E-Commerce QA Audit — {TODAY}*\n\n"
         f"<@{AMIT_ID}> Here's your automated QA report:\n\n"
         f"*Summary ({total} sites):*\n"
-        f"  :red_circle: Critical: *{crits}* &nbsp;|&nbsp; "
-        f":warning: Warnings: *{warns}* &nbsp;|&nbsp; "
-        f":white_check_mark: Passed: *{passed}* &nbsp;|&nbsp; "
-        f":x: Down: *{down}*\n"
-        f"  :shopping_trolley: Cart/Checkout issues: *{ecom_broken}*\n\n"
+        f"  [CRITICAL] *{crits}*  |  "
+        f"[WARNING] *{warns}*  |  "
+        f"[PASS] *{passed}*  |  "
+        f"[DOWN] *{down}*\n"
+        f"  Cart/Checkout issues: *{ecom_broken}*\n\n"
         f"*Top E-Commerce Issues:*\n{crit_text}\n\n"
         f"_Individual PDF reports for each site are in the thread below._\n"
-        f":clock1: _Automated Saturday 8am EST — E-Commerce Focus_"
+        f"_Automated Saturday 8am EST — E-Commerce Focus_"
     )
 
     # Post summary message
@@ -1308,7 +1496,7 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
     if can_upload:
         summary_ok = _upload_pdf(token, hdrs, summary_pdf, f"QA_Summary_{TODAY}.pdf",
                     f"QA Summary {TODAY}", SLACK_CHANNEL, thread_ts,
-                    ":bar_chart: Full summary report (all sites)")
+                    "Full summary report (all sites)")
         if not summary_ok:
             print("Summary PDF upload failed — but will still try per-site PDFs individually")
     else:
@@ -1327,7 +1515,7 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
         fname = f"QA_{safe_label}_{TODAY}.pdf"
         title = f"{result['label']} — {result['status']}"
         comment = (
-            f":page_facing_up: *{result['label']}* [{result['status']}] — "
+            f"*{result['label']}* [{result['status']}] — "
             f"{result['counts'].get('critical', 0)} critical, "
             f"{result['counts'].get('warning', 0)} warnings"
         )
@@ -1350,7 +1538,7 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
     # Post a pass-list summary in thread
     pass_sites = [r for r in all_results if r["status"] == "PASS"]
     if pass_sites:
-        pass_msg = ":white_check_mark: *Sites that passed all checks:*\n"
+        pass_msg = "[PASS] *Sites that passed all checks:*\n"
         for r in sorted(pass_sites, key=lambda x: x.get("priority", 99)):
             pass_msg += f"  - {r['label']} ({r.get('resp_time', '?')}s)\n"
         req.post("https://slack.com/api/chat.postMessage", headers=hdrs,
