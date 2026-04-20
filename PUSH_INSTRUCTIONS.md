@@ -1,6 +1,13 @@
 # How to push the updated Weekend QA Bot
 
-## Option 1: Copy files directly (easiest)
+## What changed (latest — link fixes)
+
+1. **429/503 rate-limit filtering** — HTTP 429 and 503 responses are no longer flagged as broken links (they're rate-limit responses, not actual broken pages)
+2. **Link anchor text in reports** — Broken links now include the visible link text (e.g. `"Buy Now"`, `"Learn More"`) so issues can be located on the page quickly
+3. **RATE_LIMIT_CODES constant** — `{429, 503}` set used across image checks, nav link checks, and all link validators
+4. **`_extract_link_text()` helper** — Extracts `<a>` tag inner text by href for human-readable broken link reports
+
+## How to push
 
 1. Clone your repo (if you haven't already):
    ```
@@ -8,23 +15,13 @@
    cd weekend-qa-bot
    ```
 
-2. Copy the updated files from this folder into the repo:
+2. Copy the updated file from this folder into the repo:
    - `api/cron.py` → replace `api/cron.py`
-   - `.github/workflows/weekend-qa.yml` → replace `.github/workflows/weekend-qa.yml`
 
 3. Commit and push:
    ```
-   git add api/cron.py .github/workflows/weekend-qa.yml
-   git commit -m "Per-site PDF reports with core QA checks, no ecommerce"
-   git push origin main
-   ```
-
-## Option 2: Apply the patch file
-
-1. Clone and cd into your repo
-2. Apply the patch:
-   ```
-   git am update.patch
+   git add api/cron.py
+   git commit -m "Fix broken link reporting: filter 429/503 rate limits, add anchor text context"
    git push origin main
    ```
 
@@ -56,12 +53,12 @@ After adding scopes, you must **reinstall the app** to your workspace for the ch
 ## What it checks (per site)
 
 - Broken images (fetches actual image URLs)
-- Broken navigation links
+- Broken navigation links (with anchor text for locating)
 - SSL certificate health
 - Page load performance
-- Meta tags (title, description, viewport)
-- Missing H1, canonical, favicon
+- E-commerce: cart, checkout, upsell, pricing, payment badges
+- Compliance: FDA disclaimer, terms/privacy, contact info
+- Social media link validation
 - Mixed content (HTTP on HTTPS)
 - Placeholder text detection
-- robots.txt and sitemap.xml
-- NOT ecommerce (no CTA/cart/checkout checks)
+- 429/503 rate-limit responses correctly filtered out
