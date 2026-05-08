@@ -47,6 +47,7 @@ Slack #automated-qc, tagging @Amit.
 
 Updated: 2026-04-20 — added compliance checks, fixed 429 false positives, fixed tagging.
 Updated: 2026-04-20 — added 406 to non-broken codes, removed quantity selector info warning.
+Updated: 2026-05-08 — fixed 403 WAF blocks (browser headers + retry), consolidated report grouped by issue type.
 """
 
 import requests as req
@@ -67,8 +68,20 @@ TIMEOUT = 12
 MAX_WORKERS = 10
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL_ID", "C0AP3RF4J4B")
 AMIT_ID = "U05K6HRC4V6"
-UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
-HDRS = {"User-Agent": UA}
+UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+HDRS = {
+    "User-Agent": UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Cache-Control": "max-age=0",
+}
 TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 # ── Product Priority (revenue-ranked from priority sheet) ────────────────
@@ -202,29 +215,49 @@ SITES = [
 
 # ── Check Functions ──────────────────────────────────────────────────────
 
+def _make_session():
+    """Create a requests Session with browser-like headers for WAF bypass."""
+    s = req.Session()
+    s.headers.update(HDRS)
+    return s
+
+# Shared session for connection pooling (helps avoid WAF blocks from GitHub Actions IPs)
+SESSION = _make_session()
+
+
 def check_http(url):
     """HTTP status, response time, and HTML content."""
-    try:
-        start = time.time()
-        r = req.get(url, headers=HDRS, timeout=TIMEOUT, allow_redirects=True)
-        elapsed = round(time.time() - start, 2)
-        return {
-            "code": r.status_code,
-            "time": elapsed,
-            "ok": r.status_code == 200,
-            "html": r.text,
-            "final_url": r.url,
-            "redirected": r.url != url,
-            "content_type": r.headers.get("Content-Type", ""),
-        }
-    except req.exceptions.SSLError as e:
-        return {"code": None, "err": f"SSL error: {str(e)[:100]}", "ok": False, "html": ""}
-    except req.exceptions.ConnectionError as e:
-        return {"code": None, "err": f"Connection failed: {str(e)[:100]}", "ok": False, "html": ""}
-    except req.exceptions.Timeout:
-        return {"code": None, "err": f"Timeout — no response in {TIMEOUT}s", "ok": False, "html": ""}
-    except Exception as e:
-        return {"code": None, "err": str(e)[:100], "ok": False, "html": ""}
+    for attempt in range(2):  # Retry once on 403 (WAF fluke)
+        try:
+            start = time.time()
+            r = SESSION.get(url, timeout=TIMEOUT, allow_redirects=True)
+            elapsed = round(time.time() - start, 2)
+            # Retry on 403 — often a WAF false positive from cloud IPs
+            if r.status_code == 403 and attempt == 0:
+                time.sleep(1.5)
+                continue
+            return {
+                "code": r.status_code,
+                "time": elapsed,
+                "ok": r.status_code == 200,
+                "html": r.text,
+                "final_url": r.url,
+                "redirected": r.url != url,
+                "content_type": r.headers.get("Content-Type", ""),
+            }
+        except req.exceptions.SSLError as e:
+            return {"code": None, "err": f"SSL error: {str(e)[:100]}", "ok": False, "html": ""}
+        except req.exceptions.ConnectionError as e:
+            if attempt == 0:
+                time.sleep(1)
+                continue
+            return {"code": None, "err": f"Connection failed: {str(e)[:100]}", "ok": False, "html": ""}
+        except req.exceptions.Timeout:
+            return {"code": None, "err": f"Timeout — no response in {TIMEOUT}s", "ok": False, "html": ""}
+        except Exception as e:
+            return {"code": None, "err": str(e)[:100], "ok": False, "html": ""}
+    # If we exhausted retries (shouldn't reach here, but just in case)
+    return {"code": 403, "err": "Blocked by WAF after retry", "ok": False, "html": ""}
 
 
 def check_ssl(url):
@@ -1009,224 +1042,90 @@ def audit_site(site):
     return result
 
 
-# ── PDF Generation (per site) ───────────────────────────────────────────
+# ── Consolidated PDF (grouped by issue type) ──────────────────────────────
 
-def generate_site_pdf(result):
-    """Generate a PDF report for a single site."""
+def _classify_issue(msg):
+    """Classify an issue message into a human-readable issue category."""
+    msg_lower = msg.lower()
+    # Map issue messages to grouped categories
+    classifiers = [
+        ("Site Down / Unreachable", ["http", "connection failed", "timeout", "ssl error", "blocked by waf"]),
+        ("SSL Certificate Issues", ["ssl"]),
+        ("Broken Navigation Links", ["broken navigation"]),
+        ("Broken Images", ["broken image"]),
+        ("Broken Checkout / Cart Links", ["broken checkout", "cart link", "cart form", "cart.js", "/cart.js"]),
+        ("Broken Upsell / Cross-Sell Links", ["broken upsell", "broken cross-sell"]),
+        ("Missing Buy / Add-to-Cart Button", ["add-to-cart", "buy/order button", "cannot purchase"]),
+        ("Pricing Issues ($0.00 or Missing)", ["$0.00", "no visible pricing"]),
+        ("Missing Trust Badges / Payment Seals", ["trust seal", "payment badge", "checkout confidence"]),
+        ("Missing FDA Disclaimer", ["fda disclaimer"]),
+        ("Missing Terms / Privacy Policy", ["terms of service", "privacy policy"]),
+        ("Missing Return / Refund Policy", ["return/refund", "refund policy"]),
+        ("Missing Contact Information", ["no contact info", "no phone"]),
+        ("HTTPS Not Enforced", ["http without redirect", "accessible over http"]),
+        ("Redirect Chain Issues", ["redirect chain"]),
+        ("Broken Social Media Links", ["broken social"]),
+        ("Missing Reviews / Social Proof", ["no reviews", "social proof"]),
+        ("Soft 404 / Bad Error Pages", ["soft 404", "non-existent page", "homepage redirect", "server error"]),
+        ("Missing Viewport Meta (Mobile)", ["viewport meta", "not mobile-friendly"]),
+        ("Mixed Content", ["mixed content"]),
+        ("Placeholder Text on Page", ["lorem ipsum", "placeholder text", "coming soon"]),
+        ("Page is Noindex", ["noindex"]),
+        ("AI Bots Blocked in robots.txt", ["ai bot", "robots.txt block"]),
+        ("Slow Page Load", ["slow page", "very slow", "moderate load"]),
+        ("Large HTML Size", ["large html", "very large html"]),
+        ("Missing Alt Text on Images", ["missing or empty alt"]),
+        ("No Nav / Header Element", ["no <nav>", "no <header>"]),
+        ("Shopify Collections Issue", ["/collections return"]),
+    ]
+    for category, keywords in classifiers:
+        if any(kw in msg_lower for kw in keywords):
+            return category
+    return "Other Issues"
+
+
+def generate_consolidated_pdf(all_results):
+    """Generate a single consolidated PDF: cover page + overview table + issues grouped by type."""
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.units import inch
     from reportlab.lib.colors import HexColor, white
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.enums import TA_CENTER, TA_LEFT
     from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, KeepTogether
+        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
     )
 
     buf = io.BytesIO()
     PAGE_W, PAGE_H = letter
     L_MARGIN = 0.5 * inch
     R_MARGIN = 0.5 * inch
-    USABLE_W = PAGE_W - L_MARGIN - R_MARGIN  # ~7.5 inches
+    USABLE_W = PAGE_W - L_MARGIN - R_MARGIN
 
-    doc = SimpleDocTemplate(
-        buf, pagesize=letter,
-        topMargin=0.4 * inch, bottomMargin=0.4 * inch,
-        leftMargin=L_MARGIN, rightMargin=R_MARGIN,
-    )
-    styles = getSampleStyleSheet()
-
-    # Custom styles — tighter leading, word-wrap friendly
-    styles.add(ParagraphStyle("Title2", parent=styles["Title"], fontSize=20,
-        textColor=HexColor("#1a1a2e"), alignment=TA_CENTER, spaceAfter=4))
-    styles.add(ParagraphStyle("Sub", parent=styles["Normal"], fontSize=10,
-        textColor=HexColor("#666"), alignment=TA_CENTER, spaceAfter=3))
-    styles.add(ParagraphStyle("SH", parent=styles["Heading2"], fontSize=13,
-        textColor=HexColor("#1a1a2e"), spaceBefore=12, spaceAfter=5))
-    styles.add(ParagraphStyle("Issue", parent=styles["Normal"], fontSize=9,
-        leading=12, spaceBefore=2, spaceAfter=2, leftIndent=10,
-        wordWrap='CJK'))  # CJK word-wrap breaks long URLs
-    styles.add(ParagraphStyle("Detail", parent=styles["Normal"], fontSize=8,
-        leading=10, textColor=HexColor("#555"), leftIndent=20,
-        wordWrap='CJK'))  # Ensures long URLs wrap instead of overflowing
-    styles.add(ParagraphStyle("SectionTag", parent=styles["Normal"], fontSize=7.5,
-        leading=9, textColor=HexColor("#1565c0"), leftIndent=20))
-    styles.add(ParagraphStyle("Footer", parent=styles["Normal"], fontSize=7.5,
-        textColor=HexColor("#999"), alignment=TA_CENTER))
-
-    story = []
-
-    # ── Header ──
-    status_color = {"CRITICAL": "#c62828", "WARNING": "#f57f17", "PASS": "#2e7d32",
-                    "DOWN": "#b71c1c"}.get(result["status"], "#888")
-
-    story.append(Spacer(1, 0.4 * inch))
-    story.append(Paragraph("QA Audit Report", styles["Title2"]))
-    story.append(Paragraph(result["label"], styles["Sub"]))
-    story.append(Paragraph(
-        f'<font color="#888">{result["url"]}</font>', styles["Sub"]))
-    story.append(Paragraph(
-        f'<font color="{status_color}" size="14"><b>{result["status"]}</b></font>'
-        f'&nbsp;&nbsp;|&nbsp;&nbsp;{TODAY}', styles["Sub"]))
-    story.append(Spacer(1, 0.2 * inch))
-
-    # ── Summary Stats ──
-    counts = result.get("counts", {})
-    stat_col_w = USABLE_W / 4.0
-    stat_data = [[
-        Paragraph(f'<font size="16" color="#c62828"><b>{counts.get("critical", 0)}</b></font>', styles["Sub"]),
-        Paragraph(f'<font size="16" color="#f57f17"><b>{counts.get("warning", 0)}</b></font>', styles["Sub"]),
-        Paragraph(f'<font size="16" color="#1565c0"><b>{counts.get("info", 0)}</b></font>', styles["Sub"]),
-        Paragraph(f'<font size="16"><b>{result.get("resp_time", "N/A")}s</b></font>', styles["Sub"]),
-    ], [
-        Paragraph("Critical", styles["Footer"]),
-        Paragraph("Warnings", styles["Footer"]),
-        Paragraph("Info", styles["Footer"]),
-        Paragraph("Load Time", styles["Footer"]),
-    ]]
-    st = Table(stat_data, colWidths=[stat_col_w] * 4)
-    st.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, 0), 8),
-        ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
-    ]))
-    story.append(st)
-    story.append(Spacer(1, 0.15 * inch))
-
-    cat_names = {"shopify": "Shopify Store", "tld": "TLD (WordPress)",
-                 "kill": "Kill Page", "solv_kill": "Solvaderm Kill Page",
-                 "nuu3_kill": "Nuu3 Kill Page", "ppc": "PPC Site", "seo": "SEO Site"}
-    story.append(Paragraph(
-        f'<font color="#888">Category: {cat_names.get(result["cat"], result["cat"])}'
-        f' &nbsp;|&nbsp; Images checked: {result["images_checked"]}'
-        f' &nbsp;|&nbsp; Nav links checked: {result["nav_links_checked"]}</font>',
-        styles["Footer"]))
-    story.append(Spacer(1, 0.15 * inch))
-
-    # ── E-Commerce Status Bar ──
-    ecom = result.get("ecom", {})
-    if ecom:
-        def _flag(val, label):
-            c = "#2e7d32" if val else "#c62828"
-            icon = "YES" if val else "NO"
-            return f'<font color="{c}" size="8"><b>{icon}</b></font> <font size="7" color="#666">{label}</font>'
-
-        ecom_items = [
-            _flag(ecom.get("has_atc"), "Cart"),
-            _flag(ecom.get("has_buy"), "Buy Btn"),
-            _flag(ecom.get("has_checkout_link"), "Checkout"),
-            _flag(ecom.get("has_price"), "Pricing"),
-            _flag(ecom.get("has_upsell"), "Upsell"),
-            _flag(ecom.get("has_trust"), "Trust"),
-        ]
-        ecom_row = [[Paragraph(item, styles["Footer"]) for item in ecom_items]]
-        ecom_col_w = USABLE_W / 6.0
-        et = Table(ecom_row, colWidths=[ecom_col_w] * 6)
-        et.setStyle(TableStyle([
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BACKGROUND", (0, 0), (-1, -1), HexColor("#f8f8f8")),
-            ("BOX", (0, 0), (-1, -1), 0.5, HexColor("#e0e0e0")),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ]))
-        story.append(Paragraph(
-            '<font color="#1a1a2e" size="10"><b>E-Commerce Status</b></font>',
-            styles["Sub"]))
-        story.append(Spacer(1, 0.05 * inch))
-        story.append(et)
-
-    story.append(Spacer(1, 0.2 * inch))
-
-    # ── Issues by Severity ──
-    severity_order = {"critical": 0, "warning": 1, "info": 2}
-    sorted_issues = sorted(result["issues"], key=lambda x: severity_order.get(x[0], 3))
-
-    if not sorted_issues:
-        story.append(Paragraph("All Checks Passed", styles["SH"]))
-        story.append(Paragraph(
-            '<font color="#2e7d32">No issues found. Site is healthy.</font>',
-            styles["Issue"]))
-    else:
-        # Group by severity
-        for sev, sev_label, sev_color in [
-            ("critical", "Critical Issues", "#c62828"),
-            ("warning", "Warnings", "#f57f17"),
-            ("info", "Informational", "#1565c0"),
-        ]:
-            sev_issues = [i for i in sorted_issues if i[0] == sev]
-            if not sev_issues:
-                continue
-
-            story.append(Paragraph(
-                f'<font color="{sev_color}">{sev_label} ({len(sev_issues)})</font>',
-                styles["SH"]))
-
-            for typ, msg, details in sev_issues:
-                icon = {"critical": "X", "warning": "!", "info": "i"}.get(typ, "?")
-                els = [Paragraph(
-                    f'<font color="{sev_color}"><b>[{icon}]</b></font> {msg}',
-                    styles["Issue"])]
-                # Show detail URLs with section tags — split section and URL
-                for detail in details[:3]:
-                    # Parse out [Section] prefix if present
-                    sec_match = re.match(r'\[([^\]]+)\]\s*(.*)', detail)
-                    if sec_match:
-                        section_name = sec_match.group(1)
-                        url_part = sec_match.group(2)
-                        els.append(Paragraph(
-                            f'<font color="#1565c0"><b>{section_name}</b></font>',
-                            styles["SectionTag"]))
-                        # Truncate URL but keep it readable
-                        short_url = url_part if len(url_part) < 90 else url_part[:87] + "..."
-                        els.append(Paragraph(
-                            f'<font color="#888">&rarr; {short_url}</font>',
-                            styles["Detail"]))
-                    else:
-                        short = detail if len(detail) < 90 else detail[:87] + "..."
-                        els.append(Paragraph(
-                            f'<font color="#888">&rarr; {short}</font>',
-                            styles["Detail"]))
-                story.append(KeepTogether(els))
-
-    # ── Footer ──
-    story.append(Spacer(1, 0.4 * inch))
-    story.append(Paragraph(
-        f"Generated {TODAY} by Weekend QA Bot | github.com/8amitjain/weekend-qa-bot",
-        styles["Footer"]))
-
-    doc.build(story)
-    buf.seek(0)
-    return buf
-
-
-# ── Summary PDF (overview of all sites) ──────────────────────────────────
-
-def generate_summary_pdf(all_results):
-    """Generate a single summary PDF with an overview table of all sites."""
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.units import inch
-    from reportlab.lib.colors import HexColor, white
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.enums import TA_CENTER
-    from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
-    )
-
-    buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter,
-        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
-        leftMargin=0.5 * inch, rightMargin=0.5 * inch)
+        topMargin=0.4 * inch, bottomMargin=0.4 * inch,
+        leftMargin=L_MARGIN, rightMargin=R_MARGIN)
     styles = getSampleStyleSheet()
+
+    # Custom styles
     styles.add(ParagraphStyle("CT", parent=styles["Title"], fontSize=24,
         textColor=HexColor("#1a1a2e"), alignment=TA_CENTER, spaceAfter=4))
     styles.add(ParagraphStyle("CS", parent=styles["Normal"], fontSize=12,
         textColor=HexColor("#666"), alignment=TA_CENTER, spaceAfter=4))
     styles.add(ParagraphStyle("SH", parent=styles["Heading2"], fontSize=14,
-        textColor=HexColor("#1a1a2e"), spaceBefore=12, spaceAfter=6))
+        textColor=HexColor("#1a1a2e"), spaceBefore=14, spaceAfter=6))
+    styles.add(ParagraphStyle("SH2", parent=styles["Heading3"], fontSize=11,
+        textColor=HexColor("#333"), spaceBefore=8, spaceAfter=4))
     styles.add(ParagraphStyle("SM", parent=styles["Normal"], fontSize=8,
         textColor=HexColor("#888")))
     styles.add(ParagraphStyle("Cell", parent=styles["Normal"], fontSize=8, leading=10))
+    styles.add(ParagraphStyle("Issue", parent=styles["Normal"], fontSize=9,
+        leading=12, spaceBefore=2, spaceAfter=2, leftIndent=10, wordWrap='CJK'))
+    styles.add(ParagraphStyle("Detail", parent=styles["Normal"], fontSize=8,
+        leading=10, textColor=HexColor("#555"), leftIndent=20, wordWrap='CJK'))
+    styles.add(ParagraphStyle("SiteList", parent=styles["Normal"], fontSize=8.5,
+        leading=11, textColor=HexColor("#333"), leftIndent=15, spaceBefore=1, spaceAfter=1))
+    styles.add(ParagraphStyle("Footer", parent=styles["Normal"], fontSize=7.5,
+        textColor=HexColor("#999"), alignment=TA_CENTER))
 
     story = []
     total = len(all_results)
@@ -1235,10 +1134,12 @@ def generate_summary_pdf(all_results):
     passed = sum(1 for r in all_results if r["status"] == "PASS")
     down = sum(1 for r in all_results if r["status"] == "DOWN")
 
-    # Cover
+    # ═══════════════════════════════════════════════════════════════════════
+    # PAGE 1: Cover
+    # ═══════════════════════════════════════════════════════════════════════
     story.append(Spacer(1, 1 * inch))
-    story.append(Paragraph("Weekend QA Audit Summary", styles["CT"]))
-    story.append(Paragraph(f"{TODAY} | {total} Sites", styles["CS"]))
+    story.append(Paragraph("Weekend QA Audit Report", styles["CT"]))
+    story.append(Paragraph(f"{TODAY} | {total} Sites Audited", styles["CS"]))
     story.append(Paragraph("PharmaxaLabs / Solvaderm / Nuu3", styles["CS"]))
     story.append(Spacer(1, 0.3 * inch))
 
@@ -1263,13 +1164,34 @@ def generate_summary_pdf(all_results):
         ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
     ]))
     story.append(st)
+
+    # Ecom issue count
+    ecom_broken = sum(1 for r in all_results
+        if any("cart" in m.lower() or "checkout" in m.lower() or "buy" in m.lower()
+               or "purchase" in m.lower() for t, m, _ in r["issues"] if t == "critical"))
+    if ecom_broken:
+        story.append(Spacer(1, 0.15 * inch))
+        story.append(Paragraph(
+            f'<font color="#c62828" size="11"><b>{ecom_broken}</b></font>'
+            f' <font color="#666" size="10">sites with cart/checkout issues</font>',
+            styles["CS"]))
+
     story.append(PageBreak())
 
-    # Sites table by category
+    # ═══════════════════════════════════════════════════════════════════════
+    # PAGE 2+: Site Overview Table (by category)
+    # ═══════════════════════════════════════════════════════════════════════
+    story.append(Paragraph("Site Overview", styles["SH"]))
+
     cat_order = ["shopify", "tld", "kill", "solv_kill", "nuu3_kill", "ppc", "seo"]
     cat_names = {"shopify": "Shopify Stores", "tld": "TLD Domains",
                  "kill": "Kill Pages", "solv_kill": "Solvaderm Kill Pages",
                  "nuu3_kill": "Nuu3 Kill Pages", "ppc": "PPC Sites", "seo": "SEO Sites"}
+
+    def _yn(val):
+        if val:
+            return '<font size="7" color="#2e7d32">OK</font>'
+        return '<font size="7" color="#c62828">NO</font>'
 
     for cat in cat_order:
         cat_results = sorted(
@@ -1278,17 +1200,13 @@ def generate_summary_pdf(all_results):
         if not cat_results:
             continue
 
-        story.append(Paragraph(cat_names.get(cat, cat), styles["SH"]))
+        story.append(Paragraph(cat_names.get(cat, cat), styles["SH2"]))
         rows = [["Site", "Status", "Load", "Crit", "Cart", "Checkout", "Upsell"]]
         for r in cat_results:
             sc = {"CRITICAL": "#c62828", "WARNING": "#f57f17",
                   "PASS": "#2e7d32", "DOWN": "#b71c1c"}.get(r["status"], "#888")
             c = r.get("counts", {})
             ecom = r.get("ecom", {})
-            def _yn(val):
-                if val:
-                    return '<font size="7" color="#2e7d32">OK</font>'
-                return '<font size="7" color="#c62828">NO</font>'
             rows.append([
                 Paragraph(f'<font size="8">{r["label"]}</font>', styles["Cell"]),
                 Paragraph(f'<font size="8" color="{sc}"><b>{r["status"]}</b></font>', styles["Cell"]),
@@ -1298,7 +1216,7 @@ def generate_summary_pdf(all_results):
                 Paragraph(_yn(ecom.get("has_checkout_link")), styles["Cell"]),
                 Paragraph(_yn(ecom.get("has_upsell")), styles["Cell"]),
             ])
-        t = Table(rows, colWidths=[2.0 * inch, 0.7 * inch, 0.55 * inch, 0.45 * inch, 0.55 * inch, 0.7 * inch, 0.55 * inch],
+        t = Table(rows, colWidths=[2.0*inch, 0.7*inch, 0.55*inch, 0.45*inch, 0.55*inch, 0.7*inch, 0.55*inch],
                   repeatRows=1)
         ts = [
             ("BACKGROUND", (0, 0), (-1, 0), HexColor("#1a1a2e")),
@@ -1316,10 +1234,140 @@ def generate_summary_pdf(all_results):
         story.append(t)
         story.append(Spacer(1, 6))
 
-    story.append(Spacer(1, 0.3 * inch))
+    story.append(PageBreak())
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PAGES 3+: Issues Grouped by Type
+    # ═══════════════════════════════════════════════════════════════════════
+    story.append(Paragraph("Issues by Type", styles["SH"]))
+    story.append(Paragraph(
+        '<font color="#666">Each issue type lists all affected sites, sorted by product priority.</font>',
+        styles["SM"]))
+    story.append(Spacer(1, 0.1 * inch))
+
+    # Build issue_type -> [(site_label, site_url, severity, msg, details), ...] mapping
+    issue_groups = defaultdict(list)
+    for r in all_results:
+        for sev, msg, details in r["issues"]:
+            category = _classify_issue(msg)
+            issue_groups[category].append({
+                "label": r["label"],
+                "url": r["url"],
+                "priority": r.get("priority", 99),
+                "severity": sev,
+                "msg": msg,
+                "details": details,
+            })
+
+    # Sort categories: critical-heavy first, then by count
+    def _cat_sort_key(cat_name):
+        entries = issue_groups[cat_name]
+        crit_count = sum(1 for e in entries if e["severity"] == "critical")
+        return (-crit_count, -len(entries))
+
+    sorted_categories = sorted(issue_groups.keys(), key=_cat_sort_key)
+
+    sev_colors = {"critical": "#c62828", "warning": "#f57f17", "info": "#1565c0"}
+    sev_icons = {"critical": "X", "warning": "!", "info": "i"}
+
+    for category in sorted_categories:
+        entries = issue_groups[category]
+        # Sort by priority within each group
+        entries.sort(key=lambda e: e["priority"])
+
+        # Count severities
+        cat_crits = sum(1 for e in entries if e["severity"] == "critical")
+        cat_warns = sum(1 for e in entries if e["severity"] == "warning")
+        cat_infos = sum(1 for e in entries if e["severity"] == "info")
+
+        # Determine the worst severity for the section header color
+        if cat_crits:
+            header_color = "#c62828"
+        elif cat_warns:
+            header_color = "#f57f17"
+        else:
+            header_color = "#1565c0"
+
+        count_parts = []
+        if cat_crits:
+            count_parts.append(f'{cat_crits} critical')
+        if cat_warns:
+            count_parts.append(f'{cat_warns} warning')
+        if cat_infos:
+            count_parts.append(f'{cat_infos} info')
+        count_str = ", ".join(count_parts)
+
+        section_els = []
+        section_els.append(Paragraph(
+            f'<font color="{header_color}"><b>{category}</b></font>'
+            f' <font color="#888" size="9">({len(entries)} sites — {count_str})</font>',
+            styles["SH2"]))
+
+        # List each affected site with its specific issue detail
+        for entry in entries:
+            sev = entry["severity"]
+            color = sev_colors.get(sev, "#888")
+            icon = sev_icons.get(sev, "?")
+
+            site_line = (
+                f'<font color="{color}"><b>[{icon}]</b></font> '
+                f'<font color="#333"><b>{entry["label"]}</b></font>'
+                f' <font color="#888" size="7.5">({entry["url"]})</font>'
+            )
+            section_els.append(Paragraph(site_line, styles["SiteList"]))
+
+            # Show specific details (broken URLs, etc.) indented under the site
+            if entry["details"]:
+                for detail in entry["details"][:3]:
+                    sec_match = re.match(r'\[([^\]]+)\]\s*(.*)', detail)
+                    if sec_match:
+                        section_name = sec_match.group(1)
+                        url_part = sec_match.group(2)
+                        short_url = url_part if len(url_part) < 85 else url_part[:82] + "..."
+                        section_els.append(Paragraph(
+                            f'<font color="#1565c0">{section_name}</font>'
+                            f' <font color="#888">&rarr; {short_url}</font>',
+                            styles["Detail"]))
+                    else:
+                        short = detail if len(detail) < 90 else detail[:87] + "..."
+                        section_els.append(Paragraph(
+                            f'<font color="#888">&rarr; {short}</font>',
+                            styles["Detail"]))
+
+            # If the issue message itself has useful specifics not in the category name, show it
+            # (e.g., "SSL expires in 45 days" vs just "SSL Certificate Issues")
+            if entry["msg"].lower() not in category.lower() and len(entry["msg"]) < 100:
+                section_els.append(Paragraph(
+                    f'<font color="#999" size="7.5">{entry["msg"]}</font>',
+                    styles["Detail"]))
+
+        story.append(KeepTogether(section_els[:4]))  # Keep header + first few sites together
+        if len(section_els) > 4:
+            for el in section_els[4:]:
+                story.append(el)
+        story.append(Spacer(1, 8))
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # FINAL: Passed sites list
+    # ═══════════════════════════════════════════════════════════════════════
+    pass_sites = [r for r in all_results if r["status"] == "PASS"]
+    if pass_sites:
+        story.append(Spacer(1, 0.1 * inch))
+        story.append(Paragraph(
+            f'<font color="#2e7d32"><b>Sites That Passed All Checks ({len(pass_sites)})</b></font>',
+            styles["SH2"]))
+        for r in sorted(pass_sites, key=lambda x: x.get("priority", 99)):
+            story.append(Paragraph(
+                f'<font color="#2e7d32">&#10003;</font> {r["label"]}'
+                f' <font color="#888" size="7.5">({r.get("resp_time", "?")}s)</font>',
+                styles["SiteList"]))
+
+    # Footer
+    story.append(Spacer(1, 0.4 * inch))
     story.append(Paragraph(
         f"Generated {TODAY} by Weekend QA Bot | github.com/8amitjain/weekend-qa-bot",
-        styles["SM"]))
+        styles["Footer"]))
+
     doc.build(story)
     buf.seek(0)
     return buf
@@ -1440,8 +1488,8 @@ def _post_text_fallback(hdrs, channel, thread_ts, result):
 
 # ── Slack Posting ────────────────────────────────────────────────────────
 
-def post_to_slack(all_results, site_pdfs, summary_pdf):
-    """Post summary message + per-site PDFs to Slack."""
+def post_to_slack(all_results, consolidated_pdf):
+    """Post summary message + single consolidated PDF to Slack."""
     token = os.environ.get("SLACK_BOT_TOKEN")
     if not token:
         print("SLACK_BOT_TOKEN not set — skipping Slack")
@@ -1461,7 +1509,6 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
     crit_lines = []
     for r in sorted(all_results, key=lambda x: x.get("priority", 99)):
         if r["status"] in ("CRITICAL", "DOWN"):
-            # Prioritize ecommerce issues in the summary
             ecom_issues = [m for t, m, _ in r["issues"] if t == "critical" and
                           any(kw in m.lower() for kw in ["cart", "checkout", "buy", "order", "price", "upsell", "purchase"])]
             top_issue = ecom_issues[0] if ecom_issues else next((m for t, m, _ in r["issues"] if t == "critical"), "Site down")
@@ -1469,10 +1516,22 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
 
     crit_text = "\n".join(crit_lines[:15]) if crit_lines else "  [PASS] None — all clear!"
 
-    # Count ecommerce-specific issues
     ecom_broken = sum(1 for r in all_results
         if any("cart" in m.lower() or "checkout" in m.lower() or "buy" in m.lower()
                or "purchase" in m.lower() for t, m, _ in r["issues"] if t == "critical"))
+
+    # Build issue-type summary for Slack message
+    issue_type_counts = defaultdict(int)
+    for r in all_results:
+        for sev, msg, _ in r["issues"]:
+            if sev in ("critical", "warning"):
+                category = _classify_issue(msg)
+                issue_type_counts[category] += 1
+
+    top_issues_lines = []
+    for cat, count in sorted(issue_type_counts.items(), key=lambda x: -x[1])[:8]:
+        top_issues_lines.append(f"  {cat}: *{count}* sites")
+    top_issues_text = "\n".join(top_issues_lines) if top_issues_lines else "  None"
 
     msg = (
         f"*Weekend E-Commerce QA Audit — {TODAY}*\n\n"
@@ -1483,8 +1542,9 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
         f"[PASS] *{passed}*  |  "
         f"[DOWN] *{down}*\n"
         f"  Cart/Checkout issues: *{ecom_broken}*\n\n"
-        f"*Top E-Commerce Issues:*\n{crit_text}\n\n"
-        f"_Individual PDF reports for each site are in the thread below._\n"
+        f"*Top Issues by Type:*\n{top_issues_text}\n\n"
+        f"*Critical Sites:*\n{crit_text}\n\n"
+        f"_Full report (grouped by issue type) is attached below._\n"
         f"_Automated Saturday 8am EST — E-Commerce Focus_"
     )
 
@@ -1498,50 +1558,28 @@ def post_to_slack(all_results, site_pdfs, summary_pdf):
 
     thread_ts = r.json().get("ts")
 
-    # Upload summary PDF in thread
+    # Upload the single consolidated PDF in thread
     if can_upload:
-        summary_ok = _upload_pdf(token, hdrs, summary_pdf, f"QA_Summary_{TODAY}.pdf",
-                    f"QA Summary {TODAY}", SLACK_CHANNEL, thread_ts,
-                    "Full summary report (all sites)")
-        if not summary_ok:
-            print("Summary PDF upload failed — but will still try per-site PDFs individually")
+        pdf_ok = _upload_pdf(token, hdrs, consolidated_pdf,
+                    f"QA_Report_{TODAY}.pdf",
+                    f"QA Audit Report {TODAY}",
+                    SLACK_CHANNEL, thread_ts,
+                    f"Full QA report — {total} sites, {crits} critical, {warns} warnings (grouped by issue type)")
+        if not pdf_ok:
+            print("Consolidated PDF upload failed — posting text fallback")
+            # Post text fallback for problem sites
+            for result in sorted(all_results, key=lambda x: x.get("priority", 99)):
+                if result["status"] != "PASS":
+                    _post_text_fallback(hdrs, SLACK_CHANNEL, thread_ts, result)
+                    time.sleep(0.5)
     else:
-        print("WARNING: No files:write scope — all PDFs will use text fallback")
-        print("  → Go to https://api.slack.com/apps → your app → OAuth & Permissions")
-        print("  → Add scopes: files:write, files:read → Reinstall the app")
-
-    # Upload per-site PDFs — only for sites with issues
-    problem_sites = [(r, pdf) for r, pdf in site_pdfs if r["status"] != "PASS"]
-    problem_sites.sort(key=lambda x: x[0].get("priority", 99))
-
-    pdf_success = 0
-    pdf_fail = 0
-    for result, pdf_buf in problem_sites:
-        safe_label = re.sub(r'[^a-zA-Z0-9_-]', '_', result["label"])
-        fname = f"QA_{safe_label}_{TODAY}.pdf"
-        title = f"{result['label']} — {result['status']}"
-        comment = (
-            f"*{result['label']}* [{result['status']}] — "
-            f"{result['counts'].get('critical', 0)} critical, "
-            f"{result['counts'].get('warning', 0)} warnings"
-        )
-        if can_upload:
-            ok = _upload_pdf(token, hdrs, pdf_buf, fname, title, SLACK_CHANNEL, thread_ts, comment)
-            if ok:
-                pdf_success += 1
-            else:
-                # PDF upload failed for THIS site — post text fallback
+        print("WARNING: No files:write scope — using text fallback")
+        for result in sorted(all_results, key=lambda x: x.get("priority", 99)):
+            if result["status"] != "PASS":
                 _post_text_fallback(hdrs, SLACK_CHANNEL, thread_ts, result)
-                pdf_fail += 1
-        else:
-            # No file upload permission — always use text fallback
-            _post_text_fallback(hdrs, SLACK_CHANNEL, thread_ts, result)
-            pdf_fail += 1
-        time.sleep(1.0)  # Slack rate limit — 1s between file uploads
+                time.sleep(0.5)
 
-    print(f"  PDF uploads: {pdf_success} OK, {pdf_fail} failed (text fallback used)")
-
-    # Post a pass-list summary in thread
+    # Post passed sites in thread
     pass_sites = [r for r in all_results if r["status"] == "PASS"]
     if pass_sites:
         pass_msg = "[PASS] *Sites that passed all checks:*\n"
@@ -1598,39 +1636,33 @@ def main():
     start = time.time()
     results = run_audit()
 
-    # Generate per-site PDFs
-    print(f"\nGenerating {len(results)} per-site PDF reports...")
-    site_pdfs = []
-    for r in results:
-        try:
-            pdf = generate_site_pdf(r)
-            site_pdfs.append((r, pdf))
-        except Exception as e:
-            print(f"  PDF error for {r['label']}: {e}")
+    # Generate single consolidated PDF (grouped by issue type)
+    print(f"\nGenerating consolidated PDF report for {len(results)} sites...")
+    try:
+        consolidated_pdf = generate_consolidated_pdf(results)
+        print("  Consolidated PDF generated OK")
+    except Exception as e:
+        print(f"  PDF generation error: {e}")
+        import traceback
+        traceback.print_exc()
+        consolidated_pdf = None
 
-    # Generate summary PDF
-    print("Generating summary PDF...")
-    summary_pdf = generate_summary_pdf(results)
-
-    # Save PDFs locally if OUTPUT_DIR set
+    # Save PDF locally if OUTPUT_DIR set
     output_dir = os.environ.get("OUTPUT_DIR")
-    if output_dir:
+    if output_dir and consolidated_pdf:
         os.makedirs(output_dir, exist_ok=True)
-        # Save summary
-        with open(os.path.join(output_dir, f"QA_Summary_{TODAY}.pdf"), "wb") as f:
-            summary_pdf.seek(0)
-            f.write(summary_pdf.read())
-        # Save per-site
-        for r, pdf in site_pdfs:
-            safe = re.sub(r'[^a-zA-Z0-9_-]', '_', r["label"])
-            with open(os.path.join(output_dir, f"QA_{safe}_{TODAY}.pdf"), "wb") as f:
-                pdf.seek(0)
-                f.write(pdf.read())
-        print(f"PDFs saved to {output_dir}/")
+        with open(os.path.join(output_dir, f"QA_Report_{TODAY}.pdf"), "wb") as f:
+            consolidated_pdf.seek(0)
+            f.write(consolidated_pdf.read())
+        print(f"PDF saved to {output_dir}/")
 
     # Post to Slack
-    print("Posting to Slack...")
-    slack_ok = post_to_slack(results, site_pdfs, summary_pdf)
+    if consolidated_pdf:
+        print("Posting to Slack...")
+        slack_ok = post_to_slack(results, consolidated_pdf)
+    else:
+        print("No PDF to post — skipping Slack")
+        slack_ok = False
 
     duration = round(time.time() - start)
     total = len(results)
@@ -1686,3 +1718,4 @@ except ImportError:
 
 if __name__ == "__main__":
     main()
+
