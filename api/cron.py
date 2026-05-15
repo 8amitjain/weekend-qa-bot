@@ -1,55 +1,27 @@
 """
-Weekend QA Bot — E-Commerce Focused Per-Site PDF Reports via GitHub Actions.
-Runs every Saturday at 8am EST (1pm UTC).
+Weekend QA Bot v2 — Playwright-Powered E-Commerce Auditor
+Runs every Saturday at 8am EST (1pm UTC) via GitHub Actions.
 
-Checks all active sites across PharmaxaLabs / Solvaderm / Nuu3:
-  E-COMMERCE FOCUS:
-  - Cart functionality (add-to-cart buttons, /cart endpoints)
-  - Checkout links & flows (buy-now, checkout URLs)
-  - Upsell/cross-sell elements (upsell widgets, related products)
-  - Pricing display (missing or $0.00 prices)
-  - Buy/order buttons & CTAs
-  - Shopify cart API health (/cart.js, /cart/add)
-  - Payment badge / trust seal presence
+Uses a real headless browser (Playwright/Chromium) to:
+  - Render pages fully with JavaScript
+  - Find and click buy/add-to-cart buttons
+  - Verify cart actually updates after click
+  - Detect JavaScript errors
+  - Catch broken images via network monitoring
+  - Take screenshots for visual review
+  - Check for placeholder text, $0.00 prices, rendering bugs
 
-  CORE QA (kept):
-  - Broken images
-  - Broken navigation / internal links (with link text for locating)
+Keeps lightweight checks from requests:
   - SSL certificate health
+  - HTTP status / redirects
   - Page load performance
-  - Mixed content
-  - Placeholder text detection
 
-  COMPLIANCE & TRUST (new):
-  - FDA disclaimer presence (required for supplement pages)
-  - Terms of Service / Privacy Policy links
-  - Return/refund policy link
-  - Contact information (phone, email, contact page)
-  - HTTPS enforcement (HTTP → HTTPS redirect)
-  - Redirect chain detection
-  - Social media link validation
-  - Reviews / social proof elements
-  - Proper 404 page (not soft-404 or homepage redirect)
+Report: compact PDF (only sites with issues), screenshots in Slack thread.
 
-  REMOVED (skip basic SEO noise):
-  - No H1 checks
-  - No meta title/description checks
-  - No canonical/robots/sitemap checks
-  - No Open Graph / schema checks
-  - No favicon checks
-
-  FIXED:
-  - 429/503 rate-limit responses no longer flagged as broken links
-  - Broken links include link text/title for easy locating
-
-Generates individual PDF reports per site and posts each to
-Slack #automated-qc, tagging @Amit.
-
-Updated: 2026-04-20 — added compliance checks, fixed 429 false positives, fixed tagging.
-Updated: 2026-04-20 — added 406 to non-broken codes, removed quantity selector info warning.
-Updated: 2026-05-08 — fixed 403 WAF blocks (browser headers + retry), consolidated report grouped by issue type.
+Updated: 2026-05-15 — v2 rewrite with Playwright, replaces regex-on-raw-HTML approach.
 """
 
+import asyncio
 import requests as req
 import ssl
 import socket
@@ -58,46 +30,19 @@ import time
 import json
 import os
 import io
-import concurrent.futures
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 from datetime import datetime, timezone
-from collections import defaultdict
+from playwright.async_api import async_playwright
 
 # ── Config ───────────────────────────────────────────────────────────────
-TIMEOUT = 12
-MAX_WORKERS = 10
+NAV_TIMEOUT = 25000      # 25s page load timeout
+RENDER_WAIT = 2500       # 2.5s extra wait for JS rendering
+CART_WAIT = 3500         # 3.5s wait after clicking buy button
+CONCURRENCY = 4          # parallel browser contexts
 SLACK_CHANNEL = os.environ.get("SLACK_CHANNEL_ID", "C0AP3RF4J4B")
 AMIT_ID = "U05K6HRC4V6"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-HDRS = {
-    "User-Agent": UA,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Cache-Control": "max-age=0",
-}
 TODAY = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-# ── Product Priority (revenue-ranked from priority sheet) ────────────────
-PRODUCT_PRIORITY = {
-    "Virectin": 1, "Flexoplex": 2, "Provasil": 3, "Phenocal": 4,
-    "Zenotone": 5, "Stemuderm": 6, "Nutesta": 7, "Prostara": 8,
-    "Glucoeze": 9, "Menoquil": 10, "Natures Superfuel": 11,
-    "Stemnucell": 12, "Vazopril": 13, "Nufolix": 14, "Eyevage": 15,
-    "Ocuvital": 16, "ACV Gummies": 17, "Ace Ferulic": 18,
-    "Gut Health 365": 19, "Revivatone": 20, "Somulin": 21,
-    "Juvabrite": 22, "Serelax": 23, "Colopril": 24,
-    "Flexdermal": 25, "Zenofem": 26, "Zenogel": 27,
-    "Bonexcin": 28, "Maxolean": 29, "Endmigra": 30,
-    "UTM": 31, "Sleep Support": 32, "Liver Health 365": 33,
-    "Greenpura": 34,
-}
 
 # ── Red-excluded sites (from Google Sheet — marked red) ──────────────────
 SKIP = {
@@ -119,18 +64,16 @@ SKIP = {
     "kcstrengthcoaching.com", "metropolitantheclub.com", "swissnavylube.com",
 }
 
-# ── Active Site List (74 sites, synced from Google Sheets 2026-04-17) ────
-# Categories: shopify, tld, kill, solv_kill, nuu3_kill, ppc, seo
-
+# ── Active Site List ─────────────────────────────────────────────────────
 SITES = [
-    # ── Shopify Main Stores (top-level domains) ──
+    # Shopify Main Stores
     {"url": "https://www.virectin.com/", "cat": "shopify", "label": "Virectin Store", "priority": 1},
     {"url": "https://www.flexoplex.com/", "cat": "shopify", "label": "Flexoplex Store", "priority": 2},
     {"url": "https://www.nuu3.com/", "cat": "shopify", "label": "Nuu3 Store", "priority": 11},
     {"url": "https://www.solvadermstore.com/", "cat": "shopify", "label": "Solvaderm Store", "priority": 6},
     {"url": "https://www.pharmaxalabs.com/", "cat": "shopify", "label": "PharmaxaLabs Store", "priority": 1},
 
-    # ── TLD Domains (WordPress official product sites) ──
+    # TLD Domains (WordPress product sites)
     {"url": "https://www.serelax.com/", "cat": "tld", "label": "Serelax", "priority": 23},
     {"url": "https://www.somulin.com/", "cat": "tld", "label": "Somulin", "priority": 21},
     {"url": "https://www.prostara.com/", "cat": "tld", "label": "Prostara", "priority": 8},
@@ -158,7 +101,7 @@ SITES = [
     {"url": "https://www.flexdermalstore.com/", "cat": "tld", "label": "Flexdermal Store", "priority": 25},
     {"url": "https://www.zenofemstore.com/", "cat": "tld", "label": "Zenofem Store", "priority": 26},
 
-    # ── Kill Pages (Google Adwords funnel pages) ──
+    # Kill Pages (Google Adwords funnel pages)
     {"url": "https://www.virectinstore.com/", "cat": "kill", "label": "Virectin Kill", "priority": 1},
     {"url": "https://www.menoquilstore.com/", "cat": "kill", "label": "Menoquil Kill", "priority": 10},
     {"url": "https://www.flexoplexstore.com/", "cat": "kill", "label": "Flexoplex Kill", "priority": 2},
@@ -182,7 +125,7 @@ SITES = [
     {"url": "https://maxolean.pharmaxalabs.com/", "cat": "kill", "label": "Maxolean Kill Sub", "priority": 29},
     {"url": "https://endmigra.pharmaxalabs.com/", "cat": "kill", "label": "Endmigra Kill Sub", "priority": 30},
 
-    # ── Solvaderm Kill Pages ──
+    # Solvaderm Kill Pages
     {"url": "https://products.solvadermstore.com/", "cat": "solv_kill", "label": "Solvaderm Products Hub", "priority": 6},
     {"url": "https://products.solvadermstore.com/eyevage/", "cat": "solv_kill", "label": "Eyevage Kill", "priority": 15},
     {"url": "https://products.solvadermstore.com/ace-ferulic/", "cat": "solv_kill", "label": "Ace Ferulic Kill", "priority": 18},
@@ -192,7 +135,7 @@ SITES = [
     {"url": "https://products.solvadermstore.com/universal-tinted-moisturizer/", "cat": "solv_kill", "label": "UTM Kill", "priority": 31},
     {"url": "https://products.solvadermstore.com/stemuderm/", "cat": "solv_kill", "label": "Stemuderm Kill", "priority": 6},
 
-    # ── Nuu3 Kill Pages ──
+    # Nuu3 Kill Pages
     {"url": "https://products.nuu3.com/", "cat": "nuu3_kill", "label": "Nuu3 Products Hub", "priority": 11},
     {"url": "https://products.nuu3.com/natures-superfuel/", "cat": "nuu3_kill", "label": "Superfuel Kill", "priority": 11},
     {"url": "https://products.nuu3.com/acv-gummies/", "cat": "nuu3_kill", "label": "ACV Gummies Kill", "priority": 17},
@@ -200,65 +143,46 @@ SITES = [
     {"url": "https://products.nuu3.com/sleep-support-gummies/", "cat": "nuu3_kill", "label": "Sleep Support Kill", "priority": 32},
     {"url": "https://products.nuu3.com/liver-health-365/", "cat": "nuu3_kill", "label": "Liver Health Kill", "priority": 33},
 
-    # ── PPC Sites (PBN for Google Adwords) ──
+    # PPC Sites
     {"url": "https://www.totalhealthreports.us/", "cat": "ppc", "label": "Total Health Reports", "priority": 50},
     {"url": "https://blog.totalhealthreports.us/", "cat": "ppc", "label": "THR Blog", "priority": 50},
     {"url": "https://news.totalhealthreports.us/", "cat": "ppc", "label": "THR News", "priority": 50},
     {"url": "https://www.dailyhealthshopping.com/", "cat": "ppc", "label": "Daily Health Shopping", "priority": 50},
     {"url": "https://www.trustedhealthanswers.com/", "cat": "ppc", "label": "Trusted Health Answers", "priority": 50},
 
-    # ── SEO Sites (PBN SEO) ──
+    # SEO Sites
     {"url": "https://www.healthwebmagazine.com/", "cat": "seo", "label": "Health Web Magazine", "priority": 60},
     {"url": "https://www.skinformulations.com/", "cat": "seo", "label": "Skin Formulations", "priority": 60},
 ]
 
+# Categories that are product/store pages (need e-commerce checks)
+ECOM_CATS = {"shopify", "kill", "solv_kill", "nuu3_kill", "tld"}
 
-# ── Check Functions ──────────────────────────────────────────────────────
+# Buy/CTA button selectors (Playwright locator syntax)
+BUY_SELECTORS = [
+    'button:visible:has-text("Add to Cart")',
+    'button:visible:has-text("Add To Cart")',
+    'button:visible:has-text("Buy Now")',
+    'button:visible:has-text("Buy It Now")',
+    'button:visible:has-text("Order Now")',
+    'button:visible:has-text("Shop Now")',
+    'a:visible:has-text("Add to Cart")',
+    'a:visible:has-text("Buy Now")',
+    'a:visible:has-text("Order Now")',
+    'a:visible:has-text("Get Yours")',
+    'a:visible:has-text("Claim Yours")',
+    'a:visible:has-text("Try It Now")',
+    'a:visible:has-text("Select Package")',
+    'a:visible:has-text("Choose Package")',
+    'a:visible:has-text("Select Your Package")',
+    '.shopify-payment-button button:visible',
+    'form[action="/cart/add"] button[type="submit"]:visible',
+    'button.add-to-cart:visible',
+    '[data-action="add-to-cart"]:visible',
+]
 
-def _make_session():
-    """Create a requests Session with browser-like headers for WAF bypass."""
-    s = req.Session()
-    s.headers.update(HDRS)
-    return s
 
-# Shared session for connection pooling (helps avoid WAF blocks from GitHub Actions IPs)
-SESSION = _make_session()
-
-
-def check_http(url):
-    """HTTP status, response time, and HTML content."""
-    for attempt in range(2):  # Retry once on 403 (WAF fluke)
-        try:
-            start = time.time()
-            r = SESSION.get(url, timeout=TIMEOUT, allow_redirects=True)
-            elapsed = round(time.time() - start, 2)
-            # Retry on 403 — often a WAF false positive from cloud IPs
-            if r.status_code == 403 and attempt == 0:
-                time.sleep(1.5)
-                continue
-            return {
-                "code": r.status_code,
-                "time": elapsed,
-                "ok": r.status_code == 200,
-                "html": r.text,
-                "final_url": r.url,
-                "redirected": r.url != url,
-                "content_type": r.headers.get("Content-Type", ""),
-            }
-        except req.exceptions.SSLError as e:
-            return {"code": None, "err": f"SSL error: {str(e)[:100]}", "ok": False, "html": ""}
-        except req.exceptions.ConnectionError as e:
-            if attempt == 0:
-                time.sleep(1)
-                continue
-            return {"code": None, "err": f"Connection failed: {str(e)[:100]}", "ok": False, "html": ""}
-        except req.exceptions.Timeout:
-            return {"code": None, "err": f"Timeout — no response in {TIMEOUT}s", "ok": False, "html": ""}
-        except Exception as e:
-            return {"code": None, "err": str(e)[:100], "ok": False, "html": ""}
-    # If we exhausted retries (shouldn't reach here, but just in case)
-    return {"code": 403, "err": "Blocked by WAF after retry", "ok": False, "html": ""}
-
+# ── SSL Check (lightweight, uses requests) ───────────────────────────────
 
 def check_ssl(url):
     """SSL certificate validity and expiry."""
@@ -276,1096 +200,356 @@ def check_ssl(url):
         return {"ok": False, "err": str(e)[:80]}
 
 
-def check_images(html, base_url):
-    """Find broken images — checks actual image URLs return 200. Reports page section."""
-    issues = []
-    parsed = urlparse(base_url)
+# ── Playwright Site Audit ────────────────────────────────────────────────
 
-    # Build a map of image src -> page section by finding each img tag's position
-    img_section_map = {}  # resolved_url -> section_name
-    for m in re.finditer(r'<img\s+[^>]*?src=["\']([^"\']+)["\'][^>]*?>', html, re.I):
-        src = m.group(1)
-        section = _detect_section(html, m.start(), html)
-        # Resolve URL
-        if src.startswith("data:") or src.startswith("{{") or src.startswith("{%") or len(src) < 5:
-            continue
-        if src.startswith("//"):
-            resolved = f"{parsed.scheme}:{src}"
-        elif src.startswith("/"):
-            resolved = f"{parsed.scheme}://{parsed.netloc}{src}"
-        elif not src.startswith("http"):
-            resolved = urljoin(base_url, src)
-        else:
-            resolved = src
-        if resolved not in img_section_map:
-            img_section_map[resolved] = section
-
-    # Also find CSS background images (section detection less precise here)
-    bg_imgs = re.findall(r'background(?:-image)?\s*:\s*url\(["\']?([^"\')\s]+)["\']?\)', html, re.I)
-    for img in bg_imgs:
-        if img.startswith("data:") or len(img) < 5:
-            continue
-        if img.startswith("//"):
-            img = f"{parsed.scheme}:{img}"
-        elif img.startswith("/"):
-            img = f"{parsed.scheme}://{parsed.netloc}{img}"
-        elif not img.startswith("http"):
-            img = urljoin(base_url, img)
-        if img not in img_section_map:
-            img_section_map[img] = "CSS Background"
-
-    real_imgs = list(img_section_map.keys())
-
-    # Check up to 20 images
-    broken = []
-    for img_url in real_imgs[:20]:
+async def _find_buy_button(page):
+    """Find a visible buy/add-to-cart/order button on the current page."""
+    for sel in BUY_SELECTORS:
         try:
-            r = req.head(img_url, headers=HDRS, timeout=5, allow_redirects=True)
-            # Skip rate-limit codes (429, 503) — NOT broken images
-            if r.status_code >= 400 and r.status_code not in RATE_LIMIT_CODES:
-                section = img_section_map.get(img_url, "Unknown")
-                broken.append(f"[{section}] {img_url}")
+            loc = page.locator(sel).first
+            if await loc.count() > 0 and await loc.is_visible():
+                return loc
         except Exception:
-            section = img_section_map.get(img_url, "Unknown")
-            broken.append(f"[{section}] {img_url}")
-
-    # Images without alt text
-    no_alt_tags = re.findall(r'<img\s+[^>]*?>', html, re.I)
-    no_alt = [t for t in no_alt_tags if 'alt=' not in t.lower() or re.search(r'alt=["\'][\s]*["\']', t, re.I)]
-
-    if broken:
-        issues.append(("critical", f"{len(broken)} broken image(s)", broken[:5]))
-    if no_alt:
-        total_imgs = len(no_alt_tags)
-        issues.append(("warning", f"{len(no_alt)}/{total_imgs} images missing or empty alt text", []))
-
-    return issues, len(real_imgs)
-
-
-def _detect_section(html, tag_match_pos, full_html):
-    """Detect which page section a given position falls within."""
-    # Search backwards from the match position to find the enclosing section
-    preceding = full_html[:tag_match_pos].lower()
-
-    # Check enclosing landmarks (search from nearest to furthest)
-    section_markers = [
-        ("Header / Top Nav", [r'<header', r'<nav', r'class="[^"]*top-?bar', r'class="[^"]*main-?nav',
-                              r'class="[^"]*site-?header', r'id="header', r'id="masthead']),
-        ("Footer", [r'<footer', r'class="[^"]*footer', r'id="footer', r'class="[^"]*site-?footer']),
-        ("Sidebar", [r'class="[^"]*sidebar', r'id="sidebar', r'<aside', r'class="[^"]*widget']),
-        ("Product Section", [r'class="[^"]*product', r'id="product', r'class="[^"]*shopify-section-product',
-                             r'class="[^"]*product-?template']),
-        ("Hero / Banner", [r'class="[^"]*hero', r'class="[^"]*banner', r'class="[^"]*slider',
-                           r'class="[^"]*carousel']),
-        ("Main Content", [r'<main', r'id="main', r'class="[^"]*main-?content', r'id="content',
-                          r'role="main"']),
-    ]
-
-    # Look at the last 2000 chars before the match for the nearest section marker
-    search_window = preceding[-2000:]
-    best_section = "Page Body"
-    best_pos = -1
-
-    for section_name, patterns in section_markers:
-        for pat in patterns:
-            for m in re.finditer(pat, search_window):
-                if m.start() > best_pos:
-                    best_pos = m.start()
-                    best_section = section_name
-
-    return best_section
-
-
-def _extract_link_text(html, href):
-    """Extract the visible text of an <a> tag by its href, for human-readable broken link reports."""
-    # Find <a ...href="THE_HREF"...>LINK TEXT</a>
-    escaped = re.escape(href)
-    m = re.search(rf'<a[^>]*href=["\'](?:[^"\']*?{escaped})["\'][^>]*>(.*?)</a>', html, re.I | re.S)
-    if m:
-        text = re.sub(r'<[^>]+>', '', m.group(1)).strip()  # strip inner HTML tags
-        if text and len(text) < 120:
-            return text
+            continue
     return None
 
 
-# HTTP status codes that are NOT broken links (rate limits, redirects, etc.)
-RATE_LIMIT_CODES = {406, 429, 503}
-
-
-def check_navigation(html, base_url):
-    """Check nav links for broken pages — reports which section each broken link is in."""
+async def _test_cart_flow(page, buy_button, base_url):
+    """Click the buy button and verify the cart actually updates."""
     issues = []
-    parsed = urlparse(base_url)
-    html_lower = html.lower()
-
-    # ── Collect links from identifiable page sections ──
-    section_links = {}  # url -> section name
-
-    # Define sections to scan with their regex patterns
-    section_defs = [
-        ("Header / Top Nav", [
-            (r'<header[^>]*>.*?</header>', re.I | re.S),
-            (r'<nav[^>]*>.*?</nav>', re.I | re.S),
-            (r'<[^>]+class=["\'][^"\']*(?:main-?nav|top-?bar|site-?header|masthead)[^"\']*["\'][^>]*>.*?</(?:div|ul|section|nav)>', re.I | re.S),
-        ]),
-        ("Footer", [
-            (r'<footer[^>]*>.*?</footer>', re.I | re.S),
-            (r'<[^>]+class=["\'][^"\']*(?:site-?footer|footer-?nav|footer-?menu)[^"\']*["\'][^>]*>.*?</(?:div|ul|section)>', re.I | re.S),
-        ]),
-        ("Sidebar", [
-            (r'<aside[^>]*>.*?</aside>', re.I | re.S),
-            (r'<[^>]+class=["\'][^"\']*sidebar[^"\']*["\'][^>]*>.*?</(?:div|section)>', re.I | re.S),
-        ]),
-        ("Product Section", [
-            (r'<[^>]+class=["\'][^"\']*product[^"\']*["\'][^>]*>.*?</(?:div|section)>', re.I | re.S),
-        ]),
-        ("Main Content", [
-            (r'<main[^>]*>.*?</main>', re.I | re.S),
-        ]),
-    ]
-
-    found_any_section = False
-    for section_name, patterns in section_defs:
-        for pat, flags in patterns:
-            for block_match in re.finditer(pat, html, flags):
-                found_any_section = True
-                block_html = block_match.group(0)
-                links_in_block = re.findall(r'href=["\']([^"\'#]+)["\']', block_html, re.I)
-                for link in links_in_block:
-                    if link.startswith("mailto:") or link.startswith("tel:") or link.startswith("javascript:"):
-                        continue
-                    if link.startswith("/"):
-                        full = f"{parsed.scheme}://{parsed.netloc}{link}"
-                    elif parsed.netloc in link:
-                        full = link
-                    else:
-                        continue
-                    # Keep the most specific section (don't overwrite Product with Main Content)
-                    if full not in section_links:
-                        section_links[full] = section_name
-
-    # Fallback: if no sections found, grab all internal links labeled "Page Body"
-    if not found_any_section:
-        all_links = re.findall(r'href=["\']([^"\'#]+)["\']', html, re.I)
-        for link in all_links:
-            if link.startswith("mailto:") or link.startswith("tel:") or link.startswith("javascript:"):
-                continue
-            if link.startswith("/"):
-                full = f"{parsed.scheme}://{parsed.netloc}{link}"
-            elif parsed.netloc in link:
-                full = link
-            else:
-                continue
-            if full not in section_links:
-                section_links[full] = "Page Body"
-
-    # Check up to 15 nav links
-    nav_links = list(section_links.keys())[:15]
-    broken = []
-    for link in nav_links:
-        try:
-            r = req.head(link, headers=HDRS, timeout=6, allow_redirects=True)
-            # Skip rate-limit codes (429, 503) — these are NOT broken links
-            if r.status_code >= 400 and r.status_code not in RATE_LIMIT_CODES:
-                section = section_links.get(link, "Unknown")
-                link_text = _extract_link_text(html, link) or _extract_link_text(html, urlparse(link).path)
-                text_hint = f' "{link_text}"' if link_text else ""
-                broken.append(f"[{section}] {link} ({r.status_code}){text_hint}")
-        except Exception:
-            section = section_links.get(link, "Unknown")
-            link_text = _extract_link_text(html, link) or _extract_link_text(html, urlparse(link).path)
-            text_hint = f' "{link_text}"' if link_text else ""
-            broken.append(f"[{section}] {link} (timeout){text_hint}")
-
-    if broken:
-        issues.append(("critical", f"{len(broken)} broken navigation link(s)", broken[:5]))
-
-    nav_blocks = re.findall(r'<(?:nav|header)[^>]*>.*?</(?:nav|header)>', html, re.I | re.S)
-    if not nav_blocks and not found_any_section:
-        issues.append(("warning", "No <nav> or <header> element found", []))
-
-    return issues, len(nav_links)
-
-
-def check_meta(html, url, cat=""):
-    """Minimal meta checks — only critical issues, skip basic SEO noise.
-    Kill pages and PPC sites are intentionally noindex for Google — skip that warning.
-    Instead, check AI bot crawlability for all sites."""
-    issues = []
-
-    # Viewport (critical for mobile purchases)
-    if not re.search(r'<meta\s+name=["\']viewport["\']', html, re.I):
-        issues.append(("critical", "Missing viewport meta (not mobile-friendly — kills mobile conversions)", []))
-
-    # Mixed content (breaks trust for checkout)
-    if url.startswith("https"):
-        mc = re.findall(r'(?:src|href)=["\']http://(?!localhost)', html, re.I)
-        if mc:
-            issues.append(("warning", f"Mixed content: {len(mc)} HTTP resources on HTTPS page (triggers browser warnings)", []))
-
-    # Placeholder text
-    if "lorem ipsum" in html.lower():
-        issues.append(("critical", "Lorem Ipsum placeholder text found on page", []))
-    if re.search(r"coming\s+soon", html, re.I) and "<title" in html.lower():
-        issues.append(("warning", "'Coming soon' text detected", []))
-
-    # Robots noindex — only warn for Shopify main stores, TLD, and SEO sites
-    # Kill pages and PPC sites are INTENTIONALLY noindex for Google (funnel design)
-    intentional_noindex_cats = {"kill", "solv_kill", "nuu3_kill", "ppc"}
-    robots = re.search(r'<meta\s+name=["\']robots["\']\s+content=["\']([^"\']*)["\']', html, re.I)
-    if robots and "noindex" in robots.group(1).lower():
-        if cat not in intentional_noindex_cats:
-            issues.append(("warning", "Page is set to noindex — Google won't index this page", []))
-        # For intentional noindex pages, just note it as info
-        else:
-            issues.append(("info", "Page is noindex (expected for this page type)", []))
-
-    # ── AI Bot Crawlability Check ──
-    # Check robots.txt for AI crawler blocks (ChatGPT, Claude, Perplexity, etc.)
-    parsed = urlparse(url)
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    ai_bots_blocked = []
-    ai_bots = {
-        "GPTBot": "ChatGPT / OpenAI",
-        "ChatGPT-User": "ChatGPT browsing",
-        "Claude-Web": "Claude / Anthropic",
-        "ClaudeBot": "Claude / Anthropic",
-        "anthropic-ai": "Anthropic",
-        "PerplexityBot": "Perplexity AI",
-        "Bytespider": "TikTok / ByteDance AI",
-        "CCBot": "Common Crawl (AI training data)",
-        "Google-Extended": "Google Gemini / AI",
-        "cohere-ai": "Cohere AI",
-    }
     try:
-        robots_resp = req.get(f"{base}/robots.txt", headers=HDRS, timeout=5)
-        if robots_resp.status_code == 200:
-            robots_txt = robots_resp.text.lower()
-            current_agent = None
-            for line in robots_txt.split("\n"):
-                line = line.strip()
-                if line.startswith("user-agent:"):
-                    current_agent = line.split(":", 1)[1].strip()
-                elif line.startswith("disallow:") and current_agent:
-                    path = line.split(":", 1)[1].strip()
-                    if path == "/" or path == "/*":
-                        # This agent is fully blocked
-                        for bot_key, bot_name in ai_bots.items():
-                            if bot_key.lower() == current_agent or current_agent == "*":
-                                if current_agent == "*":
-                                    # Only flag wildcard if it blocks root
-                                    pass  # Don't double-count, check specific bots
-                                else:
-                                    ai_bots_blocked.append(bot_name)
-            # Deduplicate
-            ai_bots_blocked = list(set(ai_bots_blocked))
-            if ai_bots_blocked:
-                blocked_names = ", ".join(ai_bots_blocked[:4])
-                remaining = len(ai_bots_blocked) - 4
-                suffix = f" +{remaining} more" if remaining > 0 else ""
-                issues.append(("warning",
-                    f"AI bots blocked in robots.txt: {blocked_names}{suffix}",
-                    [f"{base}/robots.txt"]))
-            else:
-                # Check if wildcard blocks everything (would block AI too)
-                if re.search(r'user-agent:\s*\*\s*\n\s*disallow:\s*/\s*$',
-                             robots_txt, re.M):
-                    issues.append(("warning",
-                        "robots.txt blocks ALL bots (including AI crawlers) with wildcard Disallow: /",
-                        [f"{base}/robots.txt"]))
-    except Exception:
-        pass  # robots.txt not reachable — not critical
+        await buy_button.click()
+        await page.wait_for_timeout(CART_WAIT)
 
-    return issues
+        # Check 1: Did we navigate to /cart or /checkout?
+        if "/cart" in page.url or "/checkout" in page.url:
+            return issues  # Cart flow works
 
+        # Check 2: Did a cart drawer/modal appear?
+        cart_drawer_sels = [
+            ".cart-drawer:visible", ".cart-modal:visible",
+            "[data-cart-drawer]:visible", ".mini-cart:visible",
+            ".cart-notification:visible", ".side-cart:visible",
+            "[class*='cart'][class*='drawer']:visible",
+            "[class*='cart'][class*='modal']:visible",
+        ]
+        for sel in cart_drawer_sels:
+            try:
+                if await page.locator(sel).first.count() > 0:
+                    return issues  # Cart drawer appeared
+            except Exception:
+                continue
 
-def check_ecommerce(html, url):
-    """E-commerce functionality checks: cart, checkout, upsell, pricing, buy buttons."""
-    issues = []
-    parsed = urlparse(url)
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    html_lower = html.lower()
-
-    # ── 1. Add-to-Cart Buttons ──
-    atc_patterns = [
-        r'add[\s_-]?to[\s_-]?cart', r'addtocart', r'add-to-cart',
-        r'btn[\s_-]?cart', r'cart[\s_-]?btn', r'product[\s_-]?form',
-        r'shopify-payment-button', r'data-action=["\']add[\s_-]?to[\s_-]?cart',
-    ]
-    has_atc = any(re.search(p, html_lower) for p in atc_patterns)
-
-    # Check for buy/order buttons
-    buy_patterns = [
-        r'buy[\s_-]?now', r'order[\s_-]?now', r'purchase[\s_-]?now',
-        r'shop[\s_-]?now', r'get[\s_-]?yours', r'claim[\s_-]?yours',
-        r'try[\s_-]?it[\s_-]?now', r'start[\s_-]?your[\s_-]?order',
-        r'buy[\s_-]?(?:1|2|3|one|two|three)', r'select[\s_-]?package',
-        r'choose[\s_-]?package', r'select[\s_-]?quantity',
-    ]
-    has_buy = any(re.search(p, html_lower) for p in buy_patterns)
-
-    if not has_atc and not has_buy:
-        issues.append(("critical", "No add-to-cart or buy/order button found — users cannot purchase", []))
-    elif not has_atc:
-        issues.append(("info", "No add-to-cart button (has buy/order button)", []))
-
-    # ── 2. Checkout Links ──
-    checkout_patterns = [
-        r'href=["\'][^"\']*checkout[^"\']*["\']',
-        r'href=["\'][^"\']*\/cart[^"\']*["\']',
-        r'action=["\'][^"\']*checkout[^"\']*["\']',
-        r'action=["\'][^"\']*\/cart[^"\']*["\']',
-    ]
-    has_checkout_link = any(re.search(p, html_lower) for p in checkout_patterns)
-
-    # Check for Shopify checkout-specific patterns
-    shopify_checkout = re.findall(
-        r'href=["\']([^"\']*(?:checkout|myshopify\.com/cart|/cart)[^"\']*)["\']',
-        html, re.I
-    )
-
-    # Check if checkout URLs are actually reachable
-    broken_checkout = []
-    for ck_url in shopify_checkout[:5]:
-        if ck_url.startswith("/"):
-            ck_url = f"{base}{ck_url}"
-        elif not ck_url.startswith("http"):
-            ck_url = urljoin(url, ck_url)
+        # Check 3: Shopify /cart.js — did item_count increase?
         try:
-            r = req.head(ck_url, headers=HDRS, timeout=6, allow_redirects=True)
-            if r.status_code >= 400 and r.status_code not in RATE_LIMIT_CODES:
-                broken_checkout.append(f"{ck_url} ({r.status_code})")
-        except Exception:
-            broken_checkout.append(f"{ck_url} (timeout)")
-
-    if broken_checkout:
-        issues.append(("critical", f"{len(broken_checkout)} broken checkout/cart link(s)", broken_checkout[:3]))
-
-    # ── 3. Pricing Display ──
-    price_patterns = [
-        r'\$\d+[\.,]\d{2}',  # $XX.XX
-        r'class=["\'][^"\']*price[^"\']*["\']',
-        r'data-price',
-        r'class=["\'][^"\']*product-price[^"\']*["\']',
-        r'itemprop=["\']price["\']',
-    ]
-    has_price = any(re.search(p, html_lower) for p in price_patterns)
-
-    # Check for $0.00 or empty prices
-    zero_prices = re.findall(r'\$0\.00', html)
-    if zero_prices:
-        issues.append(("critical", f"$0.00 price found ({len(zero_prices)} occurrences) — likely pricing error", []))
-
-    if not has_price and (has_atc or has_buy):
-        issues.append(("warning", "Buy/order button present but no visible pricing found on page", []))
-
-    # ── 4. Upsell / Cross-Sell Elements ──
-    upsell_patterns = [
-        r'upsell', r'cross[\s_-]?sell', r'you[\s_-]?may[\s_-]?also[\s_-]?like',
-        r'related[\s_-]?products?', r'frequently[\s_-]?bought',
-        r'customers[\s_-]?also[\s_-]?(?:bought|viewed)',
-        r'recommended[\s_-]?(?:products?|for[\s_-]?you)',
-        r'add[\s_-]?(?:this|these)[\s_-]?(?:too|also)',
-        r'bundle[\s_-]?(?:deal|save|offer)',
-        r'best[\s_-]?(?:seller|value)[\s_-]?(?:pack|bundle)',
-        r'save[\s_-]?(?:more|\d+%)',
-        r'(?:2|3|4|5|6)[\s_-]?(?:pack|bottle|month)',
-        r'most[\s_-]?popular[\s_-]?(?:pack|choice)',
-    ]
-    has_upsell = any(re.search(p, html_lower) for p in upsell_patterns)
-
-    # Upsell link validation — check if upsell links work
-    upsell_links = re.findall(
-        r'<(?:a|button)[^>]*(?:upsell|cross-sell|recommended|bundle)[^>]*href=["\']([^"\']+)["\']',
-        html, re.I
-    )
-    broken_upsell = []
-    for u_url in upsell_links[:5]:
-        if u_url.startswith("/"):
-            u_url = f"{base}{u_url}"
-        elif not u_url.startswith("http"):
-            u_url = urljoin(url, u_url)
-        try:
-            r = req.head(u_url, headers=HDRS, timeout=6, allow_redirects=True)
-            if r.status_code >= 400 and r.status_code not in RATE_LIMIT_CODES:
-                broken_upsell.append(f"{u_url} ({r.status_code})")
-        except Exception:
-            broken_upsell.append(f"{u_url} (timeout)")
-
-    if broken_upsell:
-        issues.append(("critical", f"{len(broken_upsell)} broken upsell/cross-sell link(s)", broken_upsell[:3]))
-
-    # ── 5. Shopify Cart API Health ──
-    # Only for Shopify sites (check for Shopify indicators)
-    is_shopify = any(x in html_lower for x in [
-        'shopify', 'cdn.shopify.com', 'myshopify.com', 'shopify-section',
-    ])
-
-    if is_shopify:
-        # Check /cart.js endpoint
-        try:
-            r = req.get(f"{base}/cart.js", headers=HDRS, timeout=6)
-            if r.status_code in RATE_LIMIT_CODES:
-                pass  # Rate-limited, not broken
-            elif r.status_code != 200:
-                issues.append(("critical", f"Shopify /cart.js returns {r.status_code} — cart may be broken", []))
-            else:
-                try:
-                    cart_data = r.json()
-                    # cart_data should have 'items', 'total_price', etc.
-                    if "items" not in cart_data and "item_count" not in cart_data:
-                        issues.append(("warning", "Shopify /cart.js response missing expected fields", []))
-                except Exception:
-                    issues.append(("warning", "Shopify /cart.js returned non-JSON response", []))
-        except Exception:
-            issues.append(("warning", "Shopify /cart.js unreachable", []))
-
-        # Check /collections exists
-        try:
-            r = req.head(f"{base}/collections", headers=HDRS, timeout=6, allow_redirects=True)
-            if r.status_code >= 400:
-                issues.append(("info", f"Shopify /collections returns {r.status_code}", []))
+            cart_data = await page.evaluate("""
+                async () => {
+                    try {
+                        const r = await fetch('/cart.js');
+                        return await r.json();
+                    } catch { return null; }
+                }
+            """)
+            if cart_data and cart_data.get("item_count", 0) > 0:
+                return issues  # Cart has items
         except Exception:
             pass
 
-    # ── 6. Payment / Trust Badges ──
-    trust_patterns = [
-        r'(?:visa|mastercard|amex|paypal|apple[\s_-]?pay|google[\s_-]?pay|shop[\s_-]?pay)',
-        r'(?:secure[\s_-]?checkout|ssl[\s_-]?secure|money[\s_-]?back[\s_-]?guarantee)',
-        r'(?:trust[\s_-]?badge|trust[\s_-]?seal|mcafee|norton|truste)',
-        r'(?:satisfaction[\s_-]?guarantee|100%[\s_-]?secure)',
-    ]
-    has_trust = any(re.search(p, html_lower) for p in trust_patterns)
-    if not has_trust and (has_atc or has_buy):
-        issues.append(("warning", "No payment badges or trust seals found — may reduce checkout confidence", []))
+        # None of the checks passed — cart flow seems broken
+        issues.append(("critical", "Add-to-cart clicked but cart did not update — checkout flow may be broken"))
 
-    # ── 7. Form/CTA Validation ──
-    # Check if product forms have valid action URLs — with section detection
-    # Skip known POST-only endpoints (Shopify /cart/add, /cart, /checkout etc.)
-    # — these always return 400 on HEAD/GET since they require POST + form data
-    POST_ONLY_PATHS = {'/cart/add', '/cart', '/checkout', '/checkout/'}
-    for form_match in re.finditer(r'<form[^>]*action=["\']([^"\']+)["\'][^>]*>', html, re.I):
-        action_url = form_match.group(1)
-        if any(kw in action_url.lower() for kw in ['cart', 'checkout', 'order', 'purchase']):
-            # Skip POST-only form endpoints — HEAD will always 400 on these
-            action_path = action_url.split('?')[0].rstrip('/')
-            if action_path in POST_ONLY_PATHS or action_path + '/' in POST_ONLY_PATHS:
-                continue
-            section = _detect_section(html, form_match.start(), html)
-            if action_url.startswith("/"):
-                full_url = f"{base}{action_url}"
-            elif action_url.startswith("http"):
-                full_url = action_url
-            else:
-                full_url = urljoin(url, action_url)
-            try:
-                r = req.head(full_url, headers=HDRS, timeout=6, allow_redirects=True)
-                if r.status_code >= 400 and r.status_code not in RATE_LIMIT_CODES:
-                    issues.append(("critical", f"Cart/checkout form action returns {r.status_code} [{section}]", [full_url]))
-            except Exception:
-                issues.append(("warning", f"Cart/checkout form action unreachable [{section}]", [full_url]))
-
-    # ── 8. Quantity Selector (detection only, no issue flagged) ──
-    qty_patterns = [
-        r'type=["\']number["\'][^>]*(?:quantity|qty)',
-        r'(?:quantity|qty)[^>]*type=["\']number["\']',
-        r'name=["\'](?:quantity|qty)["\']',
-        r'class=["\'][^"\']*(?:quantity|qty)[^"\']*["\']',
-        r'data-quantity',
-    ]
-    has_qty = any(re.search(p, html_lower) for p in qty_patterns)
-
-    return issues, {
-        "has_atc": has_atc,
-        "has_buy": has_buy,
-        "has_checkout_link": has_checkout_link,
-        "has_price": has_price,
-        "has_upsell": has_upsell,
-        "has_trust": has_trust,
-        "is_shopify": is_shopify,
-        "has_qty": has_qty,
-    }
-
-
-def check_performance(http_result, html):
-    """Basic performance checks."""
-    issues = []
-    resp_time = http_result.get("time", 0)
-
-    if resp_time > 8:
-        issues.append(("critical", f"Very slow page load: {resp_time}s", []))
-    elif resp_time > 5:
-        issues.append(("warning", f"Slow page load: {resp_time}s (target <3s)", []))
-    elif resp_time > 3:
-        issues.append(("info", f"Moderate load time: {resp_time}s", []))
-
-    # HTML size
-    if html:
-        kb = len(html) / 1024
-        if kb > 1000:
-            issues.append(("warning", f"Very large HTML: {round(kb)}KB (target <500KB)", []))
-        elif kb > 500:
-            issues.append(("info", f"Large HTML: {round(kb)}KB", []))
+    except Exception as e:
+        issues.append(("warning", f"Cart flow test error: {str(e)[:80]}"))
 
     return issues
 
 
-def check_compliance(html, url, cat=""):
-    """Compliance & trust checks critical for health supplement e-commerce sites."""
-    issues = []
-    parsed = urlparse(url)
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    html_lower = html.lower()
-
-    # ── 1. FDA Disclaimer (required for supplement sites) ──
-    fda_patterns = [
-        r'fda', r'food\s+and\s+drug\s+administration',
-        r'not\s+(?:been\s+)?(?:evaluated|approved)\s+by',
-        r'(?:diagnose|treat|cure|prevent)\s+any\s+disease',
-        r'dietary\s+supplement',
-        r'these?\s+statements?\s+have\s+not\s+been',
-    ]
-    has_fda = sum(1 for p in fda_patterns if re.search(p, html_lower))
-    # Need at least 2 matches to count as a real FDA disclaimer (not just a random mention)
-    if has_fda < 2:
-        # Only flag for product/shopping pages (not PPC/SEO content sites)
-        if cat in ("shopify", "tld", "kill", "solv_kill", "nuu3_kill"):
-            issues.append(("warning", "No FDA disclaimer found — required for supplement product pages", []))
-
-    # ── 2. Terms of Service / Privacy Policy pages ──
-    terms_patterns = [
-        r'href=["\'][^"\']*(?:terms|tos|terms-of-service|terms-and-conditions|terms_of_service)[^"\']*["\']',
-    ]
-    privacy_patterns = [
-        r'href=["\'][^"\']*(?:privacy|privacy-policy|privacy_policy)[^"\']*["\']',
-    ]
-    has_terms = any(re.search(p, html_lower) for p in terms_patterns)
-    has_privacy = any(re.search(p, html_lower) for p in privacy_patterns)
-
-    if not has_terms:
-        issues.append(("warning", "No Terms of Service link found on page", []))
-    if not has_privacy:
-        issues.append(("warning", "No Privacy Policy link found on page", []))
-
-    # ── 3. Return / Refund Policy ──
-    refund_patterns = [
-        r'href=["\'][^"\']*(?:refund|return|return-policy|refund-policy|guarantee)[^"\']*["\']',
-        r'(?:refund|return)\s+policy',
-        r'money[\s-]?back[\s-]?guarantee',
-    ]
-    has_refund = any(re.search(p, html_lower) for p in refund_patterns)
-    if not has_refund and cat in ("shopify", "tld", "kill", "solv_kill", "nuu3_kill"):
-        issues.append(("warning", "No return/refund policy link found — important for e-commerce trust", []))
-
-    # ── 4. Contact Information ──
-    has_phone = bool(re.search(r'(?:tel:|phone|call\s+us|[\(\+]?\d{1,3}[\s\-\.]?\(?\d{3}\)?[\s\-\.]\d{3}[\s\-\.]\d{4})', html_lower))
-    has_email = bool(re.search(r'mailto:|(?:contact|support|info|help)@', html_lower))
-    has_contact_link = bool(re.search(r'href=["\'][^"\']*(?:contact|support|help)[^"\']*["\']', html_lower))
-
-    if not has_phone and not has_email and not has_contact_link:
-        issues.append(("warning", "No contact info found (no phone, email, or contact page link)", []))
-
-    # ── 5. HTTPS Enforcement ──
-    # Check if HTTP version redirects to HTTPS
-    if url.startswith("https://"):
-        http_url = url.replace("https://", "http://", 1)
-        try:
-            r = req.head(http_url, headers=HDRS, timeout=6, allow_redirects=False)
-            if r.status_code in (301, 302, 307, 308):
-                location = r.headers.get("Location", "")
-                if not location.startswith("https://"):
-                    issues.append(("warning", f"HTTP does not redirect to HTTPS (redirects to {location[:80]})", []))
-            elif r.status_code == 200:
-                issues.append(("critical", "Site is accessible over HTTP without redirect to HTTPS — insecure for e-commerce", []))
-        except Exception:
-            pass  # Can't reach HTTP version, which is fine
-
-    # ── 6. Redirect Chain Detection ──
-    try:
-        r = req.get(url, headers=HDRS, timeout=TIMEOUT, allow_redirects=True)
-        if len(r.history) > 2:
-            chain = " → ".join([str(resp.status_code) for resp in r.history])
-            issues.append(("warning", f"Redirect chain detected ({len(r.history)} hops: {chain}) — slows page load", []))
-    except Exception:
-        pass
-
-    # ── 7. Social Media Links ──
-    social_patterns = {
-        "Facebook": r'href=["\'][^"\']*facebook\.com[^"\']*["\']',
-        "Instagram": r'href=["\'][^"\']*instagram\.com[^"\']*["\']',
-        "Twitter/X": r'href=["\'][^"\']*(?:twitter\.com|x\.com)[^"\']*["\']',
-        "YouTube": r'href=["\'][^"\']*youtube\.com[^"\']*["\']',
-    }
-    broken_social = []
-    for platform, pat in social_patterns.items():
-        matches = re.findall(pat, html, re.I)
-        for match in matches[:1]:  # Check first link per platform
-            social_url = re.search(r'href=["\']([^"\']+)["\']', match)
-            if social_url:
-                try:
-                    sr = req.head(social_url.group(1), headers=HDRS, timeout=6, allow_redirects=True)
-                    if sr.status_code >= 400 and sr.status_code not in RATE_LIMIT_CODES:
-                        broken_social.append(f"{platform}: {social_url.group(1)} ({sr.status_code})")
-                except Exception:
-                    pass  # Social sites often block HEAD requests, don't flag
-
-    if broken_social:
-        issues.append(("warning", f"{len(broken_social)} broken social media link(s)", broken_social[:3]))
-
-    # ── 8. Reviews / Social Proof ──
-    review_patterns = [
-        r'(?:review|testimonial|rating|customer[\s_-]?(?:review|feedback|story))',
-        r'(?:star[\s_-]?rating|verified[\s_-]?(?:buyer|purchase|review))',
-        r'(?:trustpilot|reviews\.io|judge\.me|yotpo|stamped)',
-    ]
-    has_reviews = any(re.search(p, html_lower) for p in review_patterns)
-    if not has_reviews and cat in ("shopify", "tld", "kill", "solv_kill", "nuu3_kill"):
-        issues.append(("info", "No reviews or social proof elements detected on page", []))
-
-    return issues
-
-
-def check_404_page(url):
-    """Check if site has a proper 404 page (not a generic server error or redirect to homepage)."""
-    issues = []
-    parsed = urlparse(url)
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    fake_path = f"{base}/this-page-should-not-exist-qa-test-{int(time.time())}"
-
-    try:
-        r = req.get(fake_path, headers=HDRS, timeout=8, allow_redirects=True)
-        if r.status_code == 200:
-            # Returned 200 for a page that shouldn't exist — soft 404 or homepage redirect
-            if r.url == url or r.url == base + "/" or r.url == base:
-                issues.append(("warning", "Non-existent pages redirect to homepage instead of showing 404 — bad for SEO", []))
-            else:
-                # Check if the page content looks like a generic page (not a proper 404)
-                if "404" not in r.text[:5000] and "not found" not in r.text[:5000].lower():
-                    issues.append(("warning", "Soft 404 — non-existent page returns HTTP 200 without '404' or 'not found' message", []))
-        elif r.status_code == 404:
-            pass  # Good — proper 404
-        elif r.status_code in RATE_LIMIT_CODES:
-            pass  # Rate limited
-        elif r.status_code >= 500:
-            issues.append(("warning", f"Non-existent pages return server error ({r.status_code}) instead of 404", []))
-    except Exception:
-        pass
-
-    return issues
-
-
-# check_resources removed — skip robots.txt/sitemap.xml (basic SEO noise)
-
-
-# ── Per-Site Audit ───────────────────────────────────────────────────────
-
-def audit_site(site):
-    """Run all core QA checks for a single site. Returns a result dict."""
+async def audit_site(browser, site):
+    """Full Playwright-based audit of a single site."""
     url = site["url"]
+    cat = site["cat"]
+
     result = {
         "url": url,
         "label": site["label"],
-        "cat": site["cat"],
+        "cat": cat,
         "priority": site.get("priority", 99),
-        "checks": {},
-        "issues": [],
-        "status": "UNKNOWN",
-        "resp_time": None,
-        "images_checked": 0,
-        "nav_links_checked": 0,
-        "ecom": {},
+        "issues": [],          # list of (severity, message) tuples
+        "screenshot": None,    # PNG bytes
+        "load_time": None,
     }
 
-    # 1. HTTP check
-    http = check_http(url)
-    result["checks"]["http"] = {
-        "code": http.get("code"),
-        "time": http.get("time"),
-        "ok": http["ok"],
-    }
+    # ── 1. SSL check ──
+    ssl_info = check_ssl(url)
+    if not ssl_info["ok"]:
+        result["issues"].append(("critical", f"SSL error: {ssl_info.get('err', 'unknown')}"))
+    elif ssl_info.get("warn"):
+        result["issues"].append(("critical", f"SSL certificate expires in {ssl_info['days']} days — renew immediately"))
 
-    if not http["ok"]:
-        result["issues"].append(("critical", http.get("err", f"HTTP {http.get('code')}"), []))
-        result["status"] = "DOWN"
-        result["resp_time"] = http.get("time")
-        result["counts"] = {"critical": 1, "warning": 0, "info": 0}
-        return result
+    # ── 2. Browser checks ──
+    context = await browser.new_context(
+        viewport={"width": 1440, "height": 900},
+        user_agent=UA,
+        ignore_https_errors=True,
+    )
+    page = await context.new_page()
 
-    result["resp_time"] = http.get("time")
-    html = http.get("html", "")
+    # Collect JS errors and failed network requests
+    js_errors = []
+    failed_resources = []
 
-    # 2. SSL check
-    ssl_result = check_ssl(url)
-    result["checks"]["ssl"] = ssl_result
-    if not ssl_result["ok"]:
-        result["issues"].append(("critical", f"SSL error: {ssl_result.get('err', 'failed')}", []))
-    elif ssl_result.get("warn"):
-        result["issues"].append(("critical", f"SSL certificate expires in {ssl_result['days']} days!", []))
-    elif ssl_result.get("days") and ssl_result["days"] < 60:
-        result["issues"].append(("warning", f"SSL expires in {ssl_result['days']} days", []))
+    def _on_console(msg):
+        if msg.type == "error":
+            js_errors.append(msg.text)
 
-    if html:
-        # 3. Broken images
-        img_issues, img_count = check_images(html, url)
-        result["issues"].extend(img_issues)
-        result["images_checked"] = img_count
+    def _on_request_failed(request):
+        failed_resources.append({
+            "url": request.url,
+            "type": request.resource_type,
+        })
 
-        # 4. Navigation / broken links
-        nav_issues, nav_count = check_navigation(html, url)
-        result["issues"].extend(nav_issues)
-        result["nav_links_checked"] = nav_count
+    page.on("console", _on_console)
+    page.on("requestfailed", _on_request_failed)
 
-        # 5. Minimal meta checks (viewport, mixed content, placeholder — skip SEO)
-        #    Pass category so kill/PPC pages don't get noindex warnings
-        result["issues"].extend(check_meta(html, url, cat=site["cat"]))
+    try:
+        start = time.time()
+        resp = await page.goto(url, wait_until="load", timeout=NAV_TIMEOUT)
+        await page.wait_for_timeout(RENDER_WAIT)  # Let JS render
+        result["load_time"] = round(time.time() - start, 2)
 
-        # 6. E-COMMERCE CHECKS (cart, checkout, upsell, pricing, buy buttons)
-        ecom_issues, ecom_flags = check_ecommerce(html, url)
-        result["issues"].extend(ecom_issues)
-        result["ecom"] = ecom_flags
+        # HTTP status check
+        if resp is None:
+            result["issues"].append(("critical", "Page returned no response"))
+            await context.close()
+            return result
 
-        # 7. Performance
-        result["issues"].extend(check_performance(http, html))
+        if resp.status >= 400:
+            result["issues"].append(("critical", f"Page returned HTTP {resp.status}"))
+            result["screenshot"] = await page.screenshot(type="png")
+            await context.close()
+            return result
 
-        # 8. COMPLIANCE — FDA disclaimer, terms/privacy, contact info, HTTPS, redirects
-        result["issues"].extend(check_compliance(html, url, cat=site["cat"]))
+        # Screenshot (viewport only, not full page — keeps it manageable)
+        result["screenshot"] = await page.screenshot(type="png")
 
-        # 9. 404 PAGE QUALITY — proper 404 vs soft-404 or homepage redirect
-        result["issues"].extend(check_404_page(url))
+        # Get visible page text for content checks
+        try:
+            body_text = await page.inner_text("body")
+        except Exception:
+            body_text = ""
 
-    # Determine status
-    crits = sum(1 for t, _, _ in result["issues"] if t == "critical")
-    warns = sum(1 for t, _, _ in result["issues"] if t == "warning")
-    result["status"] = "CRITICAL" if crits else ("WARNING" if warns else "PASS")
-    result["counts"] = {"critical": crits, "warning": warns,
-                        "info": sum(1 for t, _, _ in result["issues"] if t == "info")}
+        # ── E-Commerce Checks (product/store pages only) ──
+        if cat in ECOM_CATS:
+            buy_button = await _find_buy_button(page)
+
+            if not buy_button:
+                # For Shopify main stores, try navigating to a product page first
+                if cat == "shopify":
+                    product_sels = [
+                        'a[href*="/products/"]:visible',
+                        '.product-card a:visible',
+                        '.product-grid a:visible',
+                        '.collection-product a:visible',
+                    ]
+                    for sel in product_sels:
+                        try:
+                            loc = page.locator(sel).first
+                            if await loc.count() > 0:
+                                await loc.click()
+                                await page.wait_for_load_state("load")
+                                await page.wait_for_timeout(RENDER_WAIT)
+                                buy_button = await _find_buy_button(page)
+                                # Update screenshot to show product page
+                                result["screenshot"] = await page.screenshot(type="png")
+                                break
+                        except Exception:
+                            continue
+
+            if not buy_button:
+                result["issues"].append(("critical",
+                    "No visible buy/add-to-cart button found — customers cannot purchase"))
+
+            # Cart flow test (Shopify stores + kill pages with Shopify backend)
+            if buy_button and cat in ("shopify", "solv_kill", "nuu3_kill"):
+                cart_issues = await _test_cart_flow(page, buy_button, url)
+                result["issues"].extend(cart_issues)
+
+            # Pricing check
+            if "$0.00" in body_text:
+                result["issues"].append(("critical",
+                    "$0.00 price displayed on page — likely pricing configuration error"))
+
+        # ── Universal Checks ──
+
+        # Broken images (from network monitoring)
+        broken_imgs = [r for r in failed_resources if r["type"] == "image"]
+        if broken_imgs:
+            urls = [r["url"].split("?")[0].split("/")[-1] for r in broken_imgs[:3]]
+            result["issues"].append(("warning",
+                f"{len(broken_imgs)} broken image(s): {', '.join(urls)}"))
+
+        # JavaScript errors (filter noise — only real errors)
+        critical_js = [e for e in js_errors if any(kw in e.lower() for kw in [
+            "cannot read", "is not defined", "is not a function",
+            "typeerror", "referenceerror", "syntaxerror",
+            "failed to fetch", "network error", "uncaught",
+        ])]
+        if critical_js:
+            first = critical_js[0][:100]
+            result["issues"].append(("warning",
+                f"{len(critical_js)} JS error(s) — {first}"))
+
+        # Placeholder / broken text
+        if "lorem ipsum" in body_text.lower():
+            result["issues"].append(("critical",
+                "Lorem Ipsum placeholder text found on page"))
+
+        # Visible rendering bugs ("undefined", "null", "NaN" repeated)
+        for bad_text in ["undefined", "null", "NaN"]:
+            count = body_text.count(bad_text)
+            if count >= 3:
+                result["issues"].append(("warning",
+                    f"'{bad_text}' appears {count} times on page — likely JavaScript rendering bug"))
+                break
+
+        # Coming soon on live page
+        if re.search(r"coming\s+soon", body_text, re.I):
+            result["issues"].append(("warning", "'Coming soon' text detected on live page"))
+
+        # Performance
+        if result["load_time"] and result["load_time"] > 8:
+            result["issues"].append(("warning",
+                f"Very slow page load: {result['load_time']}s"))
+        elif result["load_time"] and result["load_time"] > 5:
+            result["issues"].append(("info",
+                f"Slow page load: {result['load_time']}s (target <3s)"))
+
+    except Exception as e:
+        err = str(e)[:120]
+        if "timeout" in err.lower():
+            result["issues"].append(("critical",
+                f"Page did not load within {NAV_TIMEOUT // 1000}s — site may be down"))
+        else:
+            result["issues"].append(("critical", f"Page failed to load: {err}"))
+    finally:
+        await context.close()
+
     return result
 
 
-# ── Consolidated PDF (grouped by issue type) ──────────────────────────────
+# ── PDF Report (compact — only problem sites) ───────────────────────────
 
-def _classify_issue(msg):
-    """Classify an issue message into a human-readable issue category."""
-    msg_lower = msg.lower()
-    # Map issue messages to grouped categories
-    classifiers = [
-        ("Site Down / Unreachable", ["http", "connection failed", "timeout", "ssl error", "blocked by waf"]),
-        ("SSL Certificate Issues", ["ssl"]),
-        ("Broken Navigation Links", ["broken navigation"]),
-        ("Broken Images", ["broken image"]),
-        ("Broken Checkout / Cart Links", ["broken checkout", "cart link", "cart form", "cart.js", "/cart.js"]),
-        ("Broken Upsell / Cross-Sell Links", ["broken upsell", "broken cross-sell"]),
-        ("Missing Buy / Add-to-Cart Button", ["add-to-cart", "buy/order button", "cannot purchase"]),
-        ("Pricing Issues ($0.00 or Missing)", ["$0.00", "no visible pricing"]),
-        ("Missing Trust Badges / Payment Seals", ["trust seal", "payment badge", "checkout confidence"]),
-        ("Missing FDA Disclaimer", ["fda disclaimer"]),
-        ("Missing Terms / Privacy Policy", ["terms of service", "privacy policy"]),
-        ("Missing Return / Refund Policy", ["return/refund", "refund policy"]),
-        ("Missing Contact Information", ["no contact info", "no phone"]),
-        ("HTTPS Not Enforced", ["http without redirect", "accessible over http"]),
-        ("Redirect Chain Issues", ["redirect chain"]),
-        ("Broken Social Media Links", ["broken social"]),
-        ("Missing Reviews / Social Proof", ["no reviews", "social proof"]),
-        ("Soft 404 / Bad Error Pages", ["soft 404", "non-existent page", "homepage redirect", "server error"]),
-        ("Missing Viewport Meta (Mobile)", ["viewport meta", "not mobile-friendly"]),
-        ("Mixed Content", ["mixed content"]),
-        ("Placeholder Text on Page", ["lorem ipsum", "placeholder text", "coming soon"]),
-        ("Page is Noindex", ["noindex"]),
-        ("AI Bots Blocked in robots.txt", ["ai bot", "robots.txt block"]),
-        ("Slow Page Load", ["slow page", "very slow", "moderate load"]),
-        ("Large HTML Size", ["large html", "very large html"]),
-        ("Missing Alt Text on Images", ["missing or empty alt"]),
-        ("No Nav / Header Element", ["no <nav>", "no <header>"]),
-        ("Shopify Collections Issue", ["/collections return"]),
-    ]
-    for category, keywords in classifiers:
-        if any(kw in msg_lower for kw in keywords):
-            return category
-    return "Other Issues"
-
-
-def generate_consolidated_pdf(all_results):
-    """Generate a single consolidated PDF: cover page + overview table + issues grouped by type."""
+def generate_report_pdf(all_results):
+    """Generate a compact PDF: only sites with issues, plain text format."""
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.units import inch
-    from reportlab.lib.colors import HexColor, white
+    from reportlab.lib.colors import HexColor
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.enums import TA_CENTER, TA_LEFT
     from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
+        SimpleDocTemplate, Paragraph, Spacer, KeepTogether, HRFlowable, Image
     )
+    from PIL import Image as PILImage
 
     buf = io.BytesIO()
-    PAGE_W, PAGE_H = letter
-    L_MARGIN = 0.5 * inch
-    R_MARGIN = 0.5 * inch
-    USABLE_W = PAGE_W - L_MARGIN - R_MARGIN
-
     doc = SimpleDocTemplate(buf, pagesize=letter,
-        topMargin=0.4 * inch, bottomMargin=0.4 * inch,
-        leftMargin=L_MARGIN, rightMargin=R_MARGIN)
-    styles = getSampleStyleSheet()
+        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
+        leftMargin=0.6 * inch, rightMargin=0.6 * inch)
 
-    # Custom styles
-    styles.add(ParagraphStyle("CT", parent=styles["Title"], fontSize=24,
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle("Title2", parent=styles["Title"], fontSize=22,
         textColor=HexColor("#1a1a2e"), alignment=TA_CENTER, spaceAfter=4))
-    styles.add(ParagraphStyle("CS", parent=styles["Normal"], fontSize=12,
-        textColor=HexColor("#666"), alignment=TA_CENTER, spaceAfter=4))
-    styles.add(ParagraphStyle("SH", parent=styles["Heading2"], fontSize=14,
-        textColor=HexColor("#1a1a2e"), spaceBefore=14, spaceAfter=6))
-    styles.add(ParagraphStyle("SH2", parent=styles["Heading3"], fontSize=11,
-        textColor=HexColor("#333"), spaceBefore=8, spaceAfter=4))
-    styles.add(ParagraphStyle("SM", parent=styles["Normal"], fontSize=8,
-        textColor=HexColor("#888")))
-    styles.add(ParagraphStyle("Cell", parent=styles["Normal"], fontSize=8, leading=10))
-    styles.add(ParagraphStyle("Issue", parent=styles["Normal"], fontSize=9,
-        leading=12, spaceBefore=2, spaceAfter=2, leftIndent=10, wordWrap='CJK'))
-    styles.add(ParagraphStyle("Detail", parent=styles["Normal"], fontSize=8,
-        leading=10, textColor=HexColor("#555"), leftIndent=20, wordWrap='CJK'))
-    styles.add(ParagraphStyle("SiteList", parent=styles["Normal"], fontSize=8.5,
-        leading=11, textColor=HexColor("#333"), leftIndent=15, spaceBefore=1, spaceAfter=1))
+    styles.add(ParagraphStyle("Sub", parent=styles["Normal"], fontSize=11,
+        textColor=HexColor("#666"), alignment=TA_CENTER, spaceAfter=6))
+    styles.add(ParagraphStyle("SiteName", parent=styles["Heading3"], fontSize=12,
+        textColor=HexColor("#1a1a2e"), spaceBefore=14, spaceAfter=2))
+    styles.add(ParagraphStyle("SiteURL", parent=styles["Normal"], fontSize=8,
+        textColor=HexColor("#888"), spaceAfter=4))
+    styles.add(ParagraphStyle("IssueLine", parent=styles["Normal"], fontSize=9.5,
+        leading=13, leftIndent=12, spaceBefore=1, spaceAfter=1, wordWrap='CJK'))
+    styles.add(ParagraphStyle("PassedList", parent=styles["Normal"], fontSize=9,
+        textColor=HexColor("#2e7d32"), leading=12, spaceBefore=1))
     styles.add(ParagraphStyle("Footer", parent=styles["Normal"], fontSize=7.5,
         textColor=HexColor("#999"), alignment=TA_CENTER))
 
     story = []
     total = len(all_results)
-    crits = sum(1 for r in all_results if r["status"] == "CRITICAL")
-    warns = sum(1 for r in all_results if r["status"] == "WARNING")
-    passed = sum(1 for r in all_results if r["status"] == "PASS")
-    down = sum(1 for r in all_results if r["status"] == "DOWN")
+    problem_results = [r for r in all_results if r["issues"]]
+    passed_count = total - len(problem_results)
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # PAGE 1: Cover
-    # ═══════════════════════════════════════════════════════════════════════
-    story.append(Spacer(1, 1 * inch))
-    story.append(Paragraph("Weekend QA Audit Report", styles["CT"]))
-    story.append(Paragraph(f"{TODAY} | {total} Sites Audited", styles["CS"]))
-    story.append(Paragraph("PharmaxaLabs / Solvaderm / Nuu3", styles["CS"]))
+    sev_colors = {"critical": "#c62828", "warning": "#e65100", "info": "#1565c0"}
+    sev_labels = {"critical": "CRITICAL", "warning": "WARNING", "info": "INFO"}
+
+    # ── Header ──
     story.append(Spacer(1, 0.3 * inch))
-
-    stat_data = [[
-        Paragraph(f'<font size="20">{total}</font>', styles["CS"]),
-        Paragraph(f'<font size="20" color="#c62828">{crits}</font>', styles["CS"]),
-        Paragraph(f'<font size="20" color="#f57f17">{warns}</font>', styles["CS"]),
-        Paragraph(f'<font size="20" color="#2e7d32">{passed}</font>', styles["CS"]),
-        Paragraph(f'<font size="20" color="#b71c1c">{down}</font>', styles["CS"]),
-    ], [
-        Paragraph("Total", styles["SM"]),
-        Paragraph("Critical", styles["SM"]),
-        Paragraph("Warnings", styles["SM"]),
-        Paragraph("Passed", styles["SM"]),
-        Paragraph("Down", styles["SM"]),
-    ]]
-    st = Table(stat_data, colWidths=[1.2 * inch] * 5)
-    st.setStyle(TableStyle([
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("LINEBELOW", (0, 0), (-1, 0), 0.5, HexColor("#e0e0e0")),
-        ("TOPPADDING", (0, 0), (-1, 0), 8),
-        ("BOTTOMPADDING", (0, 1), (-1, 1), 8),
-    ]))
-    story.append(st)
-
-    # Ecom issue count
-    ecom_broken = sum(1 for r in all_results
-        if any("cart" in m.lower() or "checkout" in m.lower() or "buy" in m.lower()
-               or "purchase" in m.lower() for t, m, _ in r["issues"] if t == "critical"))
-    if ecom_broken:
-        story.append(Spacer(1, 0.15 * inch))
-        story.append(Paragraph(
-            f'<font color="#c62828" size="11"><b>{ecom_broken}</b></font>'
-            f' <font color="#666" size="10">sites with cart/checkout issues</font>',
-            styles["CS"]))
-
-    story.append(PageBreak())
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # PAGE 2+: Site Overview Table (by category)
-    # ═══════════════════════════════════════════════════════════════════════
-    story.append(Paragraph("Site Overview", styles["SH"]))
-
-    cat_order = ["shopify", "tld", "kill", "solv_kill", "nuu3_kill", "ppc", "seo"]
-    cat_names = {"shopify": "Shopify Stores", "tld": "TLD Domains",
-                 "kill": "Kill Pages", "solv_kill": "Solvaderm Kill Pages",
-                 "nuu3_kill": "Nuu3 Kill Pages", "ppc": "PPC Sites", "seo": "SEO Sites"}
-
-    def _yn(val):
-        if val:
-            return '<font size="7" color="#2e7d32">OK</font>'
-        return '<font size="7" color="#c62828">NO</font>'
-
-    for cat in cat_order:
-        cat_results = sorted(
-            [r for r in all_results if r["cat"] == cat],
-            key=lambda x: x.get("priority", 99))
-        if not cat_results:
-            continue
-
-        story.append(Paragraph(cat_names.get(cat, cat), styles["SH2"]))
-        rows = [["Site", "Status", "Load", "Crit", "Cart", "Checkout", "Upsell"]]
-        for r in cat_results:
-            sc = {"CRITICAL": "#c62828", "WARNING": "#f57f17",
-                  "PASS": "#2e7d32", "DOWN": "#b71c1c"}.get(r["status"], "#888")
-            c = r.get("counts", {})
-            ecom = r.get("ecom", {})
-            rows.append([
-                Paragraph(f'<font size="8">{r["label"]}</font>', styles["Cell"]),
-                Paragraph(f'<font size="8" color="{sc}"><b>{r["status"]}</b></font>', styles["Cell"]),
-                Paragraph(f'<font size="8">{r.get("resp_time", "N/A")}s</font>', styles["Cell"]),
-                Paragraph(f'<font size="8">{c.get("critical", 0)}</font>', styles["Cell"]),
-                Paragraph(_yn(ecom.get("has_atc") or ecom.get("has_buy")), styles["Cell"]),
-                Paragraph(_yn(ecom.get("has_checkout_link")), styles["Cell"]),
-                Paragraph(_yn(ecom.get("has_upsell")), styles["Cell"]),
-            ])
-        t = Table(rows, colWidths=[2.0*inch, 0.7*inch, 0.55*inch, 0.45*inch, 0.55*inch, 0.7*inch, 0.55*inch],
-                  repeatRows=1)
-        ts = [
-            ("BACKGROUND", (0, 0), (-1, 0), HexColor("#1a1a2e")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), white),
-            ("FONTSIZE", (0, 0), (-1, 0), 9),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
-            ("GRID", (0, 0), (-1, -1), 0.5, HexColor("#e0e0e0")),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ]
-        for i in range(2, len(rows), 2):
-            ts.append(("BACKGROUND", (0, i), (-1, i), HexColor("#f5f5f5")))
-        t.setStyle(TableStyle(ts))
-        story.append(t)
-        story.append(Spacer(1, 6))
-
-    story.append(PageBreak())
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # PAGES 3+: Issues Grouped by Type
-    # ═══════════════════════════════════════════════════════════════════════
-    story.append(Paragraph("Issues by Type", styles["SH"]))
+    story.append(Paragraph("Weekend QA Report", styles["Title2"]))
     story.append(Paragraph(
-        '<font color="#666">Each issue type lists all affected sites, sorted by product priority.</font>',
-        styles["SM"]))
+        f"{TODAY} &nbsp;|&nbsp; {total} sites audited &nbsp;|&nbsp; "
+        f'<font color="#c62828">{len(problem_results)} with issues</font> &nbsp;|&nbsp; '
+        f'<font color="#2e7d32">{passed_count} passed</font>',
+        styles["Sub"]))
+    story.append(Spacer(1, 0.15 * inch))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=HexColor("#e0e0e0")))
     story.append(Spacer(1, 0.1 * inch))
 
-    # Build issue_type -> [(site_label, site_url, severity, msg, details), ...] mapping
-    issue_groups = defaultdict(list)
-    for r in all_results:
-        for sev, msg, details in r["issues"]:
-            category = _classify_issue(msg)
-            issue_groups[category].append({
-                "label": r["label"],
-                "url": r["url"],
-                "priority": r.get("priority", 99),
-                "severity": sev,
-                "msg": msg,
-                "details": details,
-            })
-
-    # Sort categories: critical-heavy first, then by count
-    def _cat_sort_key(cat_name):
-        entries = issue_groups[cat_name]
-        crit_count = sum(1 for e in entries if e["severity"] == "critical")
-        return (-crit_count, -len(entries))
-
-    sorted_categories = sorted(issue_groups.keys(), key=_cat_sort_key)
-
-    sev_colors = {"critical": "#c62828", "warning": "#f57f17", "info": "#1565c0"}
-    sev_icons = {"critical": "X", "warning": "!", "info": "i"}
-
-    for category in sorted_categories:
-        entries = issue_groups[category]
-        # Sort by priority within each group
-        entries.sort(key=lambda e: e["priority"])
-
-        # Count severities
-        cat_crits = sum(1 for e in entries if e["severity"] == "critical")
-        cat_warns = sum(1 for e in entries if e["severity"] == "warning")
-        cat_infos = sum(1 for e in entries if e["severity"] == "info")
-
-        # Determine the worst severity for the section header color
-        if cat_crits:
-            header_color = "#c62828"
-        elif cat_warns:
-            header_color = "#f57f17"
-        else:
-            header_color = "#1565c0"
-
-        count_parts = []
-        if cat_crits:
-            count_parts.append(f'{cat_crits} critical')
-        if cat_warns:
-            count_parts.append(f'{cat_warns} warning')
-        if cat_infos:
-            count_parts.append(f'{cat_infos} info')
-        count_str = ", ".join(count_parts)
-
-        section_els = []
-        section_els.append(Paragraph(
-            f'<font color="{header_color}"><b>{category}</b></font>'
-            f' <font color="#888" size="9">({len(entries)} sites — {count_str})</font>',
-            styles["SH2"]))
-
-        # List each affected site with its specific issue detail
-        for entry in entries:
-            sev = entry["severity"]
-            color = sev_colors.get(sev, "#888")
-            icon = sev_icons.get(sev, "?")
-
-            site_line = (
-                f'<font color="{color}"><b>[{icon}]</b></font> '
-                f'<font color="#333"><b>{entry["label"]}</b></font>'
-                f' <font color="#888" size="7.5">({entry["url"]})</font>'
-            )
-            section_els.append(Paragraph(site_line, styles["SiteList"]))
-
-            # Show specific details (broken URLs, etc.) indented under the site
-            if entry["details"]:
-                for detail in entry["details"][:3]:
-                    sec_match = re.match(r'\[([^\]]+)\]\s*(.*)', detail)
-                    if sec_match:
-                        section_name = sec_match.group(1)
-                        url_part = sec_match.group(2)
-                        short_url = url_part if len(url_part) < 85 else url_part[:82] + "..."
-                        section_els.append(Paragraph(
-                            f'<font color="#1565c0">{section_name}</font>'
-                            f' <font color="#888">&rarr; {short_url}</font>',
-                            styles["Detail"]))
-                    else:
-                        short = detail if len(detail) < 90 else detail[:87] + "..."
-                        section_els.append(Paragraph(
-                            f'<font color="#888">&rarr; {short}</font>',
-                            styles["Detail"]))
-
-            # If the issue message itself has useful specifics not in the category name, show it
-            # (e.g., "SSL expires in 45 days" vs just "SSL Certificate Issues")
-            if entry["msg"].lower() not in category.lower() and len(entry["msg"]) < 100:
-                section_els.append(Paragraph(
-                    f'<font color="#999" size="7.5">{entry["msg"]}</font>',
-                    styles["Detail"]))
-
-        story.append(KeepTogether(section_els[:4]))  # Keep header + first few sites together
-        if len(section_els) > 4:
-            for el in section_els[4:]:
-                story.append(el)
-        story.append(Spacer(1, 8))
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # FINAL: Passed sites list
-    # ═══════════════════════════════════════════════════════════════════════
-    pass_sites = [r for r in all_results if r["status"] == "PASS"]
-    if pass_sites:
-        story.append(Spacer(1, 0.1 * inch))
+    if not problem_results:
+        story.append(Spacer(1, 0.5 * inch))
         story.append(Paragraph(
-            f'<font color="#2e7d32"><b>Sites That Passed All Checks ({len(pass_sites)})</b></font>',
-            styles["SH2"]))
-        for r in sorted(pass_sites, key=lambda x: x.get("priority", 99)):
-            story.append(Paragraph(
-                f'<font color="#2e7d32">&#10003;</font> {r["label"]}'
-                f' <font color="#888" size="7.5">({r.get("resp_time", "?")}s)</font>',
-                styles["SiteList"]))
+            '<font color="#2e7d32" size="16"><b>All sites passed.</b></font>',
+            styles["Sub"]))
+        story.append(Paragraph("No issues detected across any of the audited sites.", styles["Sub"]))
+    else:
+        # ── Problem Sites ──
+        for result in sorted(problem_results, key=lambda r: r.get("priority", 99)):
+            site_els = []
+
+            # Site header
+            site_els.append(Paragraph(result["label"], styles["SiteName"]))
+            site_els.append(Paragraph(result["url"], styles["SiteURL"]))
+
+            # Issues — one line each
+            for sev, msg in result["issues"]:
+                color = sev_colors.get(sev, "#888")
+                label = sev_labels.get(sev, "INFO")
+                site_els.append(Paragraph(
+                    f'<font color="{color}"><b>[{label}]</b></font> {msg}',
+                    styles["IssueLine"]))
+
+            # Add screenshot thumbnail if available
+            if result.get("screenshot"):
+                try:
+                    img = PILImage.open(io.BytesIO(result["screenshot"]))
+                    img.thumbnail((360, 225))
+                    img_buf = io.BytesIO()
+                    img.save(img_buf, format="PNG")
+                    img_buf.seek(0)
+                    site_els.append(Spacer(1, 4))
+                    site_els.append(Image(img_buf, width=360, height=225))
+                except Exception:
+                    pass  # Skip screenshot if processing fails
+
+            site_els.append(Spacer(1, 6))
+
+            # Keep site header + first issues together
+            story.append(KeepTogether(site_els[:5]))
+            for el in site_els[5:]:
+                story.append(el)
+
+    # ── Passed Sites (one-liner, skip if none) ──
+    passed_sites = [r for r in all_results if not r["issues"]]
+    if passed_sites:
+        story.append(Spacer(1, 0.15 * inch))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=HexColor("#e0e0e0")))
+        story.append(Spacer(1, 0.1 * inch))
+        names = ", ".join(r["label"] for r in sorted(passed_sites, key=lambda r: r.get("priority", 99)))
+        story.append(Paragraph(
+            f'<font color="#2e7d32"><b>Passed ({len(passed_sites)}):</b></font> {names}',
+            styles["PassedList"]))
 
     # Footer
-    story.append(Spacer(1, 0.4 * inch))
+    story.append(Spacer(1, 0.3 * inch))
     story.append(Paragraph(
-        f"Generated {TODAY} by Weekend QA Bot | github.com/8amitjain/weekend-qa-bot",
+        f"Generated {TODAY} by Weekend QA Bot v2 (Playwright) | github.com/8amitjain/weekend-qa-bot",
         styles["Footer"]))
 
     doc.build(story)
@@ -1373,182 +557,116 @@ def generate_consolidated_pdf(all_results):
     return buf
 
 
-# ── Slack Helpers ───────────────────────────────────────────────────────
-
+# ── Slack Helpers ────────────────────────────────────────────────────────
 
 def _check_slack_scopes(token):
-    """Check if the Slack bot token has the required scopes for file uploads."""
+    """Check if the Slack bot token has the required scopes."""
     try:
         r = req.post("https://slack.com/api/auth.test",
                      headers={"Authorization": f"Bearer {token}"})
         if r.status_code == 200 and r.json().get("ok"):
-            # The response headers contain the scopes
             scopes = r.headers.get("x-oauth-scopes", "")
-            print(f"Slack bot scopes: {scopes}")
-            has_files = "files:write" in scopes or "files:read" in scopes
+            has_files = "files:write" in scopes
             if not has_files:
-                print("WARNING: Bot token is missing 'files:write' scope — PDF uploads will fail!")
-                print("  → Go to https://api.slack.com/apps → your app → OAuth & Permissions")
-                print("  → Add scopes: files:write, files:read → Reinstall the app")
+                print("WARNING: Bot missing 'files:write' scope — PDF uploads will fail")
             return has_files
-        else:
-            print(f"Slack auth.test failed: {r.json().get('error', 'unknown')}")
-            return False
-    except Exception as e:
-        print(f"Slack scope check error: {e}")
+        return False
+    except Exception:
         return False
 
 
 def _upload_pdf(token, hdrs, pdf_buf, filename, title, channel, thread_ts, comment):
-    """Upload a PDF to Slack using the new files.upload API. Returns True on success."""
+    """Upload a PDF to Slack using the files.upload API."""
     uh = {"Authorization": f"Bearer {token}"}
     pdf_buf.seek(0)
     pdf_bytes = pdf_buf.read()
-
-    if len(pdf_bytes) == 0:
-        print(f"  SKIP {filename}: PDF buffer is empty")
+    if not pdf_bytes:
         return False
 
-    print(f"  Uploading {filename} ({len(pdf_bytes)} bytes)...")
-
     try:
-        # Step 1: Get upload URL
         ur = req.post("https://slack.com/api/files.getUploadURLExternal",
                       headers=uh, data={"filename": filename, "length": len(pdf_bytes)})
         ur_data = ur.json()
-        if not (ur.status_code == 200 and ur_data.get("ok")):
-            err = ur_data.get("error", ur.text[:200])
-            print(f"  FAIL Step 1 getUploadURL for {filename}: {err}")
-            if "missing_scope" in str(err) or "not_allowed" in str(err):
-                print("  → Bot token needs 'files:write' scope. Add it in Slack App settings.")
+        if not ur_data.get("ok"):
+            print(f"  Upload URL failed: {ur_data.get('error')}")
             return False
 
-        upload_url = ur_data["upload_url"]
-        file_id = ur_data["file_id"]
-        print(f"  Step 1 OK — got upload URL and file_id={file_id}")
+        req.post(ur_data["upload_url"],
+                 files={"file": (filename, pdf_bytes, "application/pdf")})
 
-        # Step 2: Upload file content
-        up_resp = req.post(upload_url, files={"file": (filename, pdf_bytes, "application/pdf")})
-        if up_resp.status_code not in (200, 201):
-            print(f"  FAIL Step 2 upload content for {filename}: HTTP {up_resp.status_code} — {up_resp.text[:200]}")
-            return False
-        print(f"  Step 2 OK — file content uploaded")
-
-        # Step 3: Complete upload and share to channel/thread
         comp = req.post("https://slack.com/api/files.completeUploadExternal", headers=hdrs,
-                        json={
-                            "files": [{"id": file_id, "title": title}],
-                            "channel_id": channel,
-                            "thread_ts": thread_ts,
-                            "initial_comment": comment,
-                        })
-        comp_data = comp.json()
-        if not comp_data.get("ok"):
-            err = comp_data.get("error", "unknown")
-            print(f"  FAIL Step 3 completeUpload for {filename}: {err}")
-            if "not_in_channel" in str(err):
-                print("  → Bot needs to be invited to the channel: /invite @YourBotName")
-            elif "channel_not_found" in str(err):
-                print(f"  → Channel {channel} not found or bot doesn't have access")
-            return False
-
-        print(f"  OK uploaded {filename} to Slack")
-        return True
-
+                        json={"files": [{"id": ur_data["file_id"], "title": title}],
+                              "channel_id": channel, "thread_ts": thread_ts,
+                              "initial_comment": comment})
+        return comp.json().get("ok", False)
     except Exception as e:
-        print(f"  ERROR uploading {filename}: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"  Upload error: {e}")
         return False
 
 
-def _post_text_fallback(hdrs, channel, thread_ts, result):
-    """Post a text summary of site issues as fallback when PDF upload fails."""
-    issues_text = []
-    for sev, msg, _ in result["issues"][:10]:
-        tag = "[CRITICAL]" if sev == "critical" else "[WARNING]" if sev == "warning" else "[INFO]"
-        issues_text.append(f"  {tag} {msg[:100]}")
-
-    text = (
-        f"*{result['label']}* [{result['status']}] — "
-        f"{result['counts'].get('critical', 0)} critical, "
-        f"{result['counts'].get('warning', 0)} warnings\n"
-        + "\n".join(issues_text)
-    )
-    if len(result["issues"]) > 10:
-        text += f"\n  _...and {len(result['issues']) - 10} more issues_"
-
+def _upload_screenshot(token, hdrs, img_bytes, filename, channel, thread_ts, comment):
+    """Upload a screenshot image to Slack thread."""
+    uh = {"Authorization": f"Bearer {token}"}
     try:
-        req.post("https://slack.com/api/chat.postMessage", headers=hdrs,
-                 json={"channel": channel, "text": text,
-                        "thread_ts": thread_ts, "unfurl_links": False})
-    except Exception as e:
-        print(f"  Text fallback also failed for {result['label']}: {e}")
+        ur = req.post("https://slack.com/api/files.getUploadURLExternal",
+                      headers=uh, data={"filename": filename, "length": len(img_bytes)})
+        ur_data = ur.json()
+        if not ur_data.get("ok"):
+            return False
+
+        req.post(ur_data["upload_url"],
+                 files={"file": (filename, img_bytes, "image/png")})
+
+        comp = req.post("https://slack.com/api/files.completeUploadExternal", headers=hdrs,
+                        json={"files": [{"id": ur_data["file_id"], "title": filename}],
+                              "channel_id": channel, "thread_ts": thread_ts,
+                              "initial_comment": comment})
+        return comp.json().get("ok", False)
+    except Exception:
+        return False
 
 
 # ── Slack Posting ────────────────────────────────────────────────────────
 
-def post_to_slack(all_results, consolidated_pdf):
-    """Post summary message + single consolidated PDF to Slack."""
+def post_to_slack(all_results, report_pdf):
+    """Post summary + PDF + screenshots to Slack."""
     token = os.environ.get("SLACK_BOT_TOKEN")
     if not token:
         print("SLACK_BOT_TOKEN not set — skipping Slack")
         return False
 
     hdrs = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-    # Check if we have file upload permissions
     can_upload = _check_slack_scopes(token)
+
     total = len(all_results)
-    crits = sum(1 for r in all_results if r["status"] == "CRITICAL")
-    warns = sum(1 for r in all_results if r["status"] == "WARNING")
-    passed = sum(1 for r in all_results if r["status"] == "PASS")
-    down = sum(1 for r in all_results if r["status"] == "DOWN")
+    problem_results = [r for r in all_results if r["issues"]]
+    passed_count = total - len(problem_results)
 
-    # Build critical items list — focus on ecommerce issues
-    crit_lines = []
-    for r in sorted(all_results, key=lambda x: x.get("priority", 99)):
-        if r["status"] in ("CRITICAL", "DOWN"):
-            ecom_issues = [m for t, m, _ in r["issues"] if t == "critical" and
-                          any(kw in m.lower() for kw in ["cart", "checkout", "buy", "order", "price", "upsell", "purchase"])]
-            top_issue = ecom_issues[0] if ecom_issues else next((m for t, m, _ in r["issues"] if t == "critical"), "Site down")
-            crit_lines.append(f"  [CRITICAL] *{r['label']}*: {top_issue[:70]}")
+    # Count critical vs warning
+    crit_sites = sum(1 for r in problem_results
+                     if any(s == "critical" for s, _ in r["issues"]))
 
-    crit_text = "\n".join(crit_lines[:15]) if crit_lines else "  [PASS] None — all clear!"
-
-    ecom_broken = sum(1 for r in all_results
-        if any("cart" in m.lower() or "checkout" in m.lower() or "buy" in m.lower()
-               or "purchase" in m.lower() for t, m, _ in r["issues"] if t == "critical"))
-
-    # Build issue-type summary for Slack message
-    issue_type_counts = defaultdict(int)
-    for r in all_results:
-        for sev, msg, _ in r["issues"]:
-            if sev in ("critical", "warning"):
-                category = _classify_issue(msg)
-                issue_type_counts[category] += 1
-
-    top_issues_lines = []
-    for cat, count in sorted(issue_type_counts.items(), key=lambda x: -x[1])[:8]:
-        top_issues_lines.append(f"  {cat}: *{count}* sites")
-    top_issues_text = "\n".join(top_issues_lines) if top_issues_lines else "  None"
+    # Build concise summary
+    if not problem_results:
+        status_line = f"All {total} sites passed with no issues."
+    else:
+        issue_lines = []
+        for r in sorted(problem_results, key=lambda x: x.get("priority", 99))[:10]:
+            top_issue = next((m for s, m in r["issues"] if s == "critical"),
+                            next((m for s, m in r["issues"]), ""))
+            issue_lines.append(f"  *{r['label']}*: {top_issue[:70]}")
+        status_line = "\n".join(issue_lines)
 
     msg = (
-        f"*Weekend E-Commerce QA Audit — {TODAY}*\n\n"
-        f"<@{AMIT_ID}> Here's your automated QA report:\n\n"
-        f"*Summary ({total} sites):*\n"
-        f"  [CRITICAL] *{crits}*  |  "
-        f"[WARNING] *{warns}*  |  "
-        f"[PASS] *{passed}*  |  "
-        f"[DOWN] *{down}*\n"
-        f"  Cart/Checkout issues: *{ecom_broken}*\n\n"
-        f"*Top Issues by Type:*\n{top_issues_text}\n\n"
-        f"*Critical Sites:*\n{crit_text}\n\n"
-        f"_Full report (grouped by issue type) is attached below._\n"
-        f"_Automated Saturday 8am EST — E-Commerce Focus_"
+        f"*Weekend QA Report — {TODAY}*\n\n"
+        f"<@{AMIT_ID}> Audit complete.\n\n"
+        f"*{total}* sites audited — "
+        f"*{len(problem_results)}* with issues, "
+        f"*{passed_count}* passed\n\n"
+        f"*Sites with issues:*\n{status_line}\n\n"
+        f"_Full report (PDF) and screenshots in thread below._"
     )
 
-    # Post summary message
     r = req.post("https://slack.com/api/chat.postMessage", headers=hdrs,
                  json={"channel": SLACK_CHANNEL, "text": msg, "unfurl_links": False})
 
@@ -1558,128 +676,114 @@ def post_to_slack(all_results, consolidated_pdf):
 
     thread_ts = r.json().get("ts")
 
-    # Upload the single consolidated PDF in thread
-    if can_upload:
-        pdf_ok = _upload_pdf(token, hdrs, consolidated_pdf,
-                    f"QA_Report_{TODAY}.pdf",
-                    f"QA Audit Report {TODAY}",
+    # Upload PDF
+    if can_upload and report_pdf:
+        _upload_pdf(token, hdrs, report_pdf,
+                    f"QA_Report_{TODAY}.pdf", f"QA Report {TODAY}",
                     SLACK_CHANNEL, thread_ts,
-                    f"Full QA report — {total} sites, {crits} critical, {warns} warnings (grouped by issue type)")
-        if not pdf_ok:
-            print("Consolidated PDF upload failed — posting text fallback")
-            # Post text fallback for problem sites
-            for result in sorted(all_results, key=lambda x: x.get("priority", 99)):
-                if result["status"] != "PASS":
-                    _post_text_fallback(hdrs, SLACK_CHANNEL, thread_ts, result)
-                    time.sleep(0.5)
-    else:
-        print("WARNING: No files:write scope — using text fallback")
-        for result in sorted(all_results, key=lambda x: x.get("priority", 99)):
-            if result["status"] != "PASS":
-                _post_text_fallback(hdrs, SLACK_CHANNEL, thread_ts, result)
-                time.sleep(0.5)
+                    f"Full report — {len(problem_results)} sites with issues")
 
-    # Post passed sites in thread
-    pass_sites = [r for r in all_results if r["status"] == "PASS"]
-    if pass_sites:
-        pass_msg = "[PASS] *Sites that passed all checks:*\n"
-        for r in sorted(pass_sites, key=lambda x: x.get("priority", 99)):
-            pass_msg += f"  - {r['label']} ({r.get('resp_time', '?')}s)\n"
-        req.post("https://slack.com/api/chat.postMessage", headers=hdrs,
-                 json={"channel": SLACK_CHANNEL, "text": pass_msg,
-                        "thread_ts": thread_ts, "unfurl_links": False})
+        # Upload screenshots for problem sites
+        for result in sorted(problem_results, key=lambda x: x.get("priority", 99)):
+            if result.get("screenshot"):
+                safe = re.sub(r'[^a-zA-Z0-9_-]', '_', result["label"])
+                _upload_screenshot(token, hdrs, result["screenshot"],
+                    f"{safe}_{TODAY}.png", SLACK_CHANNEL, thread_ts,
+                    f"Screenshot: *{result['label']}*")
+                time.sleep(0.8)  # Rate limit
 
     return True
 
 
 # ── Main Runner ──────────────────────────────────────────────────────────
 
-def run_audit():
-    """Run QA audit on all active sites (excluding red/skip list)."""
-    print(f"Starting audit on {len(SITES)} sites (skipping {len(SKIP)} red sites)...")
-
-    # Filter out skipped sites
+async def run_audit():
+    """Run Playwright-based audit on all active sites."""
     active = []
     for site in SITES:
         host = urlparse(site["url"]).netloc.replace("www.", "")
         if host not in SKIP:
             active.append(site)
         else:
-            print(f"  Skipping (red): {site['label']} ({host})")
+            print(f"  Skipping (red): {site['label']}")
 
-    print(f"Auditing {len(active)} active sites...")
+    print(f"Auditing {len(active)} sites with Playwright...")
 
-    # Run audits in parallel
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        future_map = {ex.submit(audit_site, s): s for s in active}
-        for future in concurrent.futures.as_completed(future_map):
-            try:
-                result = future.result()
-                results.append(result)
-                status_icon = {"CRITICAL": "X", "WARNING": "!", "PASS": ".", "DOWN": "D"}.get(result["status"], "?")
-                print(f"  [{status_icon}] {result['label']}: {result['status']}")
-            except Exception as e:
-                site = future_map[future]
-                print(f"  [E] {site['label']}: {e}")
-                results.append({
-                    "url": site["url"], "label": site["label"], "cat": site["cat"],
-                    "priority": site.get("priority", 99), "issues": [("critical", f"Audit error: {e}", [])],
-                    "status": "DOWN", "counts": {"critical": 1, "warning": 0, "info": 0},
-                    "resp_time": None, "images_checked": 0, "nav_links_checked": 0,
-                })
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        semaphore = asyncio.Semaphore(CONCURRENCY)
 
-    return results
+        async def audit_with_limit(site):
+            async with semaphore:
+                try:
+                    result = await audit_site(browser, site)
+                    status = "ISSUE" if result["issues"] else "PASS"
+                    icon = "!" if status == "ISSUE" else "."
+                    print(f"  [{icon}] {result['label']}: {status} ({result.get('load_time', '?')}s)")
+                    return result
+                except Exception as e:
+                    print(f"  [E] {site['label']}: {e}")
+                    return {
+                        "url": site["url"], "label": site["label"],
+                        "cat": site["cat"], "priority": site.get("priority", 99),
+                        "issues": [("critical", f"Audit error: {str(e)[:100]}")],
+                        "screenshot": None, "load_time": None,
+                    }
+
+        results = await asyncio.gather(*[audit_with_limit(s) for s in active])
+        await browser.close()
+
+    return list(results)
 
 
 def main():
     start = time.time()
-    results = run_audit()
+    results = asyncio.run(run_audit())
 
-    # Generate single consolidated PDF (grouped by issue type)
-    print(f"\nGenerating consolidated PDF report for {len(results)} sites...")
+    # Generate compact PDF
+    print(f"\nGenerating report PDF...")
     try:
-        consolidated_pdf = generate_consolidated_pdf(results)
-        print("  Consolidated PDF generated OK")
+        report_pdf = generate_report_pdf(results)
     except Exception as e:
-        print(f"  PDF generation error: {e}")
+        print(f"  PDF error: {e}")
         import traceback
         traceback.print_exc()
-        consolidated_pdf = None
+        report_pdf = None
 
-    # Save PDF locally if OUTPUT_DIR set
+    # Save locally if OUTPUT_DIR set
     output_dir = os.environ.get("OUTPUT_DIR")
-    if output_dir and consolidated_pdf:
+    if output_dir:
         os.makedirs(output_dir, exist_ok=True)
-        with open(os.path.join(output_dir, f"QA_Report_{TODAY}.pdf"), "wb") as f:
-            consolidated_pdf.seek(0)
-            f.write(consolidated_pdf.read())
-        print(f"PDF saved to {output_dir}/")
+        if report_pdf:
+            with open(os.path.join(output_dir, f"QA_Report_{TODAY}.pdf"), "wb") as f:
+                report_pdf.seek(0)
+                f.write(report_pdf.read())
+        # Save screenshots
+        for r in results:
+            if r.get("screenshot") and r["issues"]:
+                safe = re.sub(r'[^a-zA-Z0-9_-]', '_', r["label"])
+                with open(os.path.join(output_dir, f"{safe}_{TODAY}.png"), "wb") as f:
+                    f.write(r["screenshot"])
+        print(f"  Saved to {output_dir}/")
 
     # Post to Slack
-    if consolidated_pdf:
+    if report_pdf:
         print("Posting to Slack...")
-        slack_ok = post_to_slack(results, consolidated_pdf)
+        slack_ok = post_to_slack(results, report_pdf)
     else:
-        print("No PDF to post — skipping Slack")
         slack_ok = False
 
     duration = round(time.time() - start)
     total = len(results)
-    crits = sum(1 for r in results if r["status"] == "CRITICAL")
-    warns = sum(1 for r in results if r["status"] == "WARNING")
-    down = sum(1 for r in results if r["status"] == "DOWN")
-    passed = sum(1 for r in results if r["status"] == "PASS")
+    problems = sum(1 for r in results if r["issues"])
+    passed = total - problems
 
-    print(
-        f"\nDone in {duration}s! {total} sites — "
-        f"{crits} critical, {warns} warnings, {down} down, {passed} passed. "
-        f"Slack: {'OK' if slack_ok else 'FAILED'}"
-    )
+    print(f"\nDone in {duration}s! {total} sites — {problems} with issues, {passed} passed. "
+          f"Slack: {'OK' if slack_ok else 'FAILED'}")
     return results
 
 
-# ── Vercel Handler (kept for backwards compat) ──────────────────────────
+# ── Vercel Handler (backwards compat) ────────────────────────────────────
 
 try:
     from http.server import BaseHTTPRequestHandler
@@ -1698,12 +802,12 @@ try:
             try:
                 results = main()
                 total = len(results)
-                crits = sum(1 for r in results if r["status"] == "CRITICAL")
+                problems = sum(1 for r in results if r["issues"])
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps({
-                    "success": True, "total": total, "critical": crits,
+                    "success": True, "total": total, "issues": problems,
                 }).encode())
             except Exception as e:
                 self.send_response(500)
@@ -1714,8 +818,5 @@ except ImportError:
     pass
 
 
-# ── CLI Entry Point ──────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     main()
-
